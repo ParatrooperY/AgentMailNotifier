@@ -1,0 +1,25 @@
+[package]
+name = "agent-mail-notifier"
+version = "0.1.0"
+description = "Desktop email notifications for Codex and Claude Code"
+authors = ["Agent Mail Notifier contributors"]
+edition = "2024"
+
+[lib]
+name = "agent_mail_notifier"
+crate-type = ["cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+agent-mail-notifier-core = { path = "crates/notifier-core" }
+chrono = { version = "0.4", features = ["serde"] }
+keyring = { version = "3", default-features = false, features = ["windows-native"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+uuid = { version = "1", features = ["v4"] }
