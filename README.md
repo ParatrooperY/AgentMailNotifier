@@ -72,35 +72,79 @@ Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮
 
 ## 开发
 
-需要 Node.js、Rust 工具链和 Visual Studio Desktop C++ 构建工具。
+### 这个应用由两半组成
+
+界面那一半是网页技术写的（React），跑在一个内嵌的浏览器窗口里。干活那一半是 Rust 写的，负责读会话记录、发邮件、管托盘图标。中间的框架叫 Tauri，它把这两半拼成一个 exe。
+
+所以要装两套工具链：**Node.js** 管界面那半，**Rust** 管干活那半。
+
+Windows 上还要装 **Visual Studio Desktop C++ 构建工具**。Rust 自己不带链接器（把编译好的碎片拼成 exe 的那个程序），在 Windows 上要借微软的。装 Visual Studio Installer 时勾「使用 C++ 的桌面开发」就行，不用装完整的 Visual Studio。
+
+### 装依赖
 
 ```bash
 npm install
 ```
 
-开发模式：
+这条只装界面那半的依赖，下载到 `node_modules/`。Rust 那半不用手动装 —— 第一次构建时 Cargo（Rust 的包管理器）会自己去下载，编译产物堆在 `src-tauri/target/`。这两个目录都很大，已经写进 `.gitignore` 不入库。
+
+### 开发模式
 
 ```bash
 npm run tauri dev
 ```
 
-跑测试：
+这一条命令背后做了三件事，顺序是固定的：
+
+先按 `src-tauri/tauri.conf.json` 里的 `beforeDevCommand` 启动前端开发服务器（Vite），它把界面挂在 `http://localhost:1420`。
+
+然后编译 Rust 那半，开一个桌面窗口，窗口内容指向刚才那个地址。
+
+最后保持监听。改 `src/` 里的界面代码，窗口里立刻刷新，不用重启（专业叫法：热更新）。改 `src-tauri/` 里的 Rust 代码，它会重新编译再重开窗口，慢一些。
+
+**第一次跑会很慢**，Rust 要从零编译几百个依赖包，十几分钟正常。之后有缓存，几秒到几十秒。
+
+### 跑测试
+
+两半各有各的测试，命令也是分开的。
+
+界面部分：
 
 ```bash
 npm test
 ```
 
+Rust 部分：
+
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-打包：
+`--manifest-path` 是告诉 Cargo「配置文件在这儿」。因为 Rust 代码在 `src-tauri/` 子目录里，不加这个参数就得先 `cd` 进去。
+
+### 打包成安装包
 
 ```bash
 npm run tauri build
 ```
 
-产物在 `src-tauri/target/release/bundle/`。项目故意没有启用自动更新，发版需要手动上传安装包到 Releases。
+这条比开发模式多了几步：
+
+先跑 `tsc --noEmit` 检查类型有没有写错（`--noEmit` 意思是只检查、不产出文件），有错就停下，不会打出一个坏包。
+
+再用 Vite 把界面编译成静态文件放进 `dist/`。
+
+然后用 release 模式编译 Rust。跟开发模式的区别是开了优化，编译慢但跑起来快、体积小。
+
+最后把界面文件和 Rust 程序打进一个 exe，再套一层 NSIS 安装程序。
+
+产物在这两个位置：
+
+`src-tauri/target/release/bundle/nsis/` —— 安装包
+
+`src-tauri/target/release/agent-mail-notifier.exe` —— 免安装版，可以直接改名当便携版用
+
+项目故意没有启用自动更新，发新版要手动把这两个文件传到 GitHub Releases。
 
 ## 项目结构
 
