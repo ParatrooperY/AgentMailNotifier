@@ -1,14 +1,12 @@
-<div align="center">
+<h1 align="center">Agent Mail Notifier</h1>
 
-# Agent Mail Notifier
+<p align="center"><b>Codex / Claude Code 任务完成邮件通知</b>（Tauri 2 + Rust + React）</p>
 
-**Codex / Claude Code 任务完成邮件通知**（Tauri 2 + Rust + React）
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/ParatrooperY/AgentMailNotifier?include_prereleases)](https://github.com/ParatrooperY/AgentMailNotifier/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](#已知限制)
-
-</div>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
+  <a href="https://github.com/ParatrooperY/AgentMailNotifier/releases"><img src="https://img.shields.io/github/v/release/ParatrooperY/AgentMailNotifier?include_prereleases" alt="Release" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey" alt="Platform" />
+</p>
 
 <p align="center"><a href="README.en.md">English</a> · <b>简体中文</b></p>
 
@@ -25,14 +23,17 @@ Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。挂机跑�
 - **邮箱预设**：QQ / Foxmail、网易 163 / 126 / yeah.net、Outlook / Hotmail / Live、Gmail 自动补全主机与端口；其它邮箱手填主机、端口、SSL 或 STARTTLS。
 - **只读监听**：读取会话记录判断一轮结束，不修改 Codex 的 `config.toml` 或 Claude Code 的 `settings.json`；不建立对外监听端口。
 - **事件过滤**：子代理中间事件、程序内部回执一律丢弃；一轮任务只发一封，不会因为同一次完成重复投递。
-- **后台常驻**：关闭窗口后留在系统托盘；托盘菜单用勾选标出两个通道当前的开关状态，退出即彻底停止发信。
+- **后台常驻**：关闭窗口后留在系统托盘；托盘菜单用勾选标出两个通道当前的开关状态，退出即彻底停止监听。
 
 ## 截图
 
-<div align="center">
-<img src="docs/codex.png" alt="Codex 通道" width="48%"/>&nbsp;<img src="docs/claudecode.png" alt="Claude Code 通道" width="48%"/>
-<br/><sub>Codex 通道 · Claude Code 通道</sub>
-</div>
+**Codex 通道**
+
+![Codex 通道](docs/codex.png)
+
+**Claude Code 通道**
+
+![Claude Code 通道](docs/claudecode.png)
 
 ## 安装
 
@@ -51,8 +52,6 @@ Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。挂机跑�
 
 **第二步，启用通知。** 分别打开 Codex 和 Claude Code 的开关。
 
-**第三步，让它待着。** 窗口关掉不影响，托盘图标在就行。程序没运行时不会发邮件，也不会堆积后补发。
-
 ### 支持的邮箱预设
 
 | 邮箱 | SMTP 主机 | 端口 | 加密 |
@@ -62,13 +61,13 @@ Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。挂机跑�
 | Outlook / Hotmail / Live | smtp.office365.com | 587 | STARTTLS |
 | Gmail | smtp.gmail.com | 465 | SSL |
 
-其它邮箱选自定义，手填主机、端口和加密方式。
+其它邮箱选自定义，填主机、端口和加密方式。
 
 ## 已知限制
 
 - **只支持 Windows x64**，依赖 Windows 凭据管理器和本机会话记录路径。
 - **被长度上限截断的回复不发通知**，判定「一轮结束」依赖会话记录里的收尾标记，正常收尾和被停止串收尾都算完成，但撞到 token 上限的半截回复会跳过。
-- **程序没运行时的事件会丢**，不做离线队列，避免重启后收到一堆过期通知。
+- **程序没运行时的事件会丢失**，不做离线监听队列，避免重启后收到一堆过期通知。
 - **移动安装路径后**，便携版需要重新启用一次通道。
 
 ## 开发
@@ -122,7 +121,7 @@ docs/                                   应用截图
 
 ## 反馈
 
-遇到问题或有改进想法，请开 [Issue](https://github.com/ParatrooperY/AgentMailNotifier/issues)。目前不接受代码贡献。
+问题反馈或有改进想法请以 [Issue](https://github.com/ParatrooperY/AgentMailNotifier/issues) 形式反馈，目前不接受PR。
 
 ## 许可
 

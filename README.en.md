@@ -1,14 +1,12 @@
-<div align="center">
+<h1 align="center">Agent Mail Notifier</h1>
 
-# Agent Mail Notifier
+<p align="center"><b>Email notifications for finished Codex / Claude Code tasks</b> (Tauri 2 + Rust + React)</p>
 
-**Email notifications for finished Codex / Claude Code tasks** (Tauri 2 + Rust + React)
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/ParatrooperY/AgentMailNotifier?include_prereleases)](https://github.com/ParatrooperY/AgentMailNotifier/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](#known-limitations)
-
-</div>
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
+  <a href="https://github.com/ParatrooperY/AgentMailNotifier/releases"><img src="https://img.shields.io/github/v/release/ParatrooperY/AgentMailNotifier?include_prereleases" alt="Release" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey" alt="Platform" />
+</p>
 
 <p align="center"><b>English</b> · <a href="README.md">简体中文</a></p>
 
@@ -25,14 +23,17 @@ The app only reads the two clients' session transcripts to decide whether a task
 - **Provider presets**: QQ / Foxmail, NetEase 163 / 126 / yeah.net, Outlook / Hotmail / Live and Gmail fill in host and port automatically; anything else takes a manual host, port and SSL or STARTTLS.
 - **Read-only listeners**: transcripts decide when a turn ended, so Codex's `config.toml` and Claude Code's `settings.json` are never patched; no inbound port is opened.
 - **Event filtering**: subagent events and internal receipts are dropped; one finished turn produces exactly one mail, never a duplicate for the same completion.
-- **Runs in the background**: closing the window leaves it in the system tray; the tray menu check marks show each channel's current state, and quitting stops delivery entirely.
+- **Runs in the background**: closing the window leaves it in the system tray; the tray menu check marks show each channel's current state, and quitting stops listening entirely.
 
 ## Screenshots
 
-<div align="center">
-<img src="docs/codex.png" alt="Codex channel" width="48%"/>&nbsp;<img src="docs/claudecode.png" alt="Claude Code channel" width="48%"/>
-<br/><sub>Codex channel · Claude Code channel</sub>
-</div>
+**Codex channel**
+
+![Codex channel](docs/codex.png)
+
+**Claude Code channel**
+
+![Claude Code channel](docs/claudecode.png)
 
 ## Install
 
@@ -51,8 +52,6 @@ The authorization code is not the mailbox login password. Enable SMTP in the pro
 
 **2. Enable notifications.** Turn on Codex and Claude Code independently.
 
-**3. Leave it running.** Closing the window is fine as long as the tray icon is there. Events that happen while the app is not running are discarded and not replayed later.
-
 ### SMTP presets
 
 | Provider | Host | Port | Encryption |
@@ -68,7 +67,7 @@ Use Custom for any other provider and fill in host, port, and encryption yoursel
 
 - **Windows x64 only**, since it relies on Windows Credential Manager and local transcript paths.
 - **Replies cut off by the token limit are not mailed**, because a turn counts as finished on `end_turn` or `stop_sequence`, and a `max_tokens` truncation is skipped.
-- **Events while the app is stopped are dropped**, with no offline queue, so a restart does not dump a backlog of stale mail.
+- **Events while the app is stopped are dropped**, with no offline listening queue, so a restart does not dump a backlog of stale mail.
 - **Moving the portable exe** requires re-enabling each channel.
 
 ## Development
@@ -122,7 +121,7 @@ The UI lives in `src/`, `src-tauri/src/` watches transcripts and sends mail, and
 
 ## Feedback
 
-Open an [Issue](https://github.com/ParatrooperY/AgentMailNotifier/issues) for bugs or ideas. Code contributions are not accepted at this time.
+Submit an [Issue](https://github.com/ParatrooperY/AgentMailNotifier/issues) for bugs or ideas. PRs are not accepted at present.
 
 ## License
 
