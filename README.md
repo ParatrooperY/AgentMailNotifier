@@ -1,33 +1,38 @@
+<div align="center">
+
 # Agent Mail Notifier
 
-[English](README.en.md) | 简体中文
+**Codex / Claude Code 任务完成邮件通知**（Tauri 2 + Rust + React）
 
-Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。
-
-挂机跑长任务时不用一直守着终端。任务结束、或者中途失败需要你介入，邮件会告诉你。
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ParatrooperY/AgentMailNotifier?include_prereleases)](https://github.com/ParatrooperY/AgentMailNotifier/releases)
-![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](#已知限制)
+
+</div>
+
+<p align="center"><a href="README.en.md">English</a> · <b>简体中文</b></p>
+
+## 这是什么
+
+Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。挂机跑长任务时不用一直守着终端，任务结束、或者中途失败需要你介入，邮件会告诉你。
+
+程序只读取两个客户端的会话记录来判断任务是否完成，不往它们的配置里写任何东西；SMTP 授权码交给 Windows 凭据管理器保管，不落盘到配置文件。
 
 ## 功能
 
-- **两个通道各自独立**：Codex 和 Claude Code 分别配置发件邮箱、分别保存通知记录，互不影响。
-- **授权码不落盘**：SMTP 授权码存进 Windows 凭据管理器，配置文件里只有主机、端口这类非敏感项。
-- **常见邮箱免填服务器**：输入 QQ、网易、Outlook、Gmail 地址会自动补全 SMTP 主机和端口，其它邮箱可手填。
-- **只读监听，不改你的配置**：通过读取会话记录判断任务完成，不往 Codex 或 Claude Code 的配置里插东西。
-- **托盘常驻**：关掉窗口继续在后台跑，托盘菜单可直接开关两个通道。
-- **过滤噪音**：子代理产生的中间事件、程序内部回执不会触发邮件，一轮任务只发一封。
+- **通道隔离**：Codex 与 Claude Code 分别配置发件邮箱；通知记录分开保存；托盘菜单可单独开关任一通道。
+- **凭据安全**：SMTP 授权码存入 Windows 凭据管理器；配置文件只留主机、端口、加密方式等非敏感项；测试成功后输入框自动清空。
+- **邮箱预设**：QQ / Foxmail、网易 163 / 126 / yeah.net、Outlook / Hotmail / Live、Gmail 自动补全主机与端口；其它邮箱手填主机、端口、SSL 或 STARTTLS。
+- **只读监听**：读取会话记录判断一轮结束，不修改 Codex 的 `config.toml` 或 Claude Code 的 `settings.json`；不建立对外监听端口。
+- **事件过滤**：子代理中间事件、程序内部回执一律丢弃；一轮任务只发一封，不会因为同一次完成重复投递。
+- **后台常驻**：关闭窗口后留在系统托盘；托盘菜单用勾选标出两个通道当前的开关状态，退出即彻底停止发信。
 
 ## 截图
 
-**Codex**
-
-![Codex 通道](docs/codex.png)
-
-**Claude Code**
-
-![Claude Code 通道](docs/claudecode.png)
+<div align="center">
+<img src="docs/codex.png" alt="Codex 通道" width="48%"/>&nbsp;<img src="docs/claudecode.png" alt="Claude Code 通道" width="48%"/>
+<br/><sub>Codex 通道 · Claude Code 通道</sub>
+</div>
 
 ## 安装
 
@@ -61,10 +66,10 @@ Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。
 
 ## 已知限制
 
-- **只支持 Windows x64。** 依赖 Windows 凭据管理器和本机会话记录路径。
-- **被长度上限截断的回复不发通知。** 判定「一轮结束」依赖会话记录里的收尾标记，正常收尾和被停止串收尾都算完成，但撞到 token 上限的半截回复会跳过。
-- **程序没运行时的事件会丢。** 设计如此，不做离线队列，避免重启后收到一堆过期通知。
-- **移动安装路径后**便携版需要重新启用一次通道。
+- **只支持 Windows x64**，依赖 Windows 凭据管理器和本机会话记录路径。
+- **被长度上限截断的回复不发通知**，判定「一轮结束」依赖会话记录里的收尾标记，正常收尾和被停止串收尾都算完成，但撞到 token 上限的半截回复会跳过。
+- **程序没运行时的事件会丢**，不做离线队列，避免重启后收到一堆过期通知。
+- **移动安装路径后**，便携版需要重新启用一次通道。
 
 ## 开发
 
@@ -101,20 +106,19 @@ npm run tauri build
 ## 项目结构
 
 ```
-src/                        React 前端
-src-tauri/src/              Tauri 主进程、状态管理、SMTP 发送
-src-tauri/crates/
-  notifier-core/            事件解析、投递判定、SMTP 预设（纯逻辑，可单测）
-docs/                       README 截图
+src/                                    React 前端
+src-tauri/src/                          Tauri 主进程、状态管理、SMTP 发送
+src-tauri/crates/notifier-core/         事件解析、投递判定、SMTP 预设（纯逻辑，可单测）
+docs/                                   应用截图
 ```
 
-前端负责界面，`src-tauri/src/` 负责监听会话记录和发信，`notifier-core` 是不依赖 Tauri 的纯逻辑层，事件过滤和投递条件判定都在这里，测试主要覆盖它。
+前端负责界面，`src-tauri/src/` 负责监听会话记录和发信，`notifier-core` 是不依赖 Tauri 的纯逻辑层，包括事件过滤和投递条件判定。
 
 ## 安全说明
 
 - SMTP 授权码只存 Windows 凭据管理器，不写进配置文件、不进通知记录、不出现在界面上。测试成功后输入框会自动清空。
 - 程序不修改 Codex 和 Claude Code 的配置文件，只读取会话记录。
-- 不建立任何对外监听端口，不上传数据到第三方。邮件直接从本机发到你配置的 SMTP 服务器。
+- 不建立任何对外监听端口，不上传数据到第三方，邮件直接从本机发到配置的 SMTP 服务器。
 
 ## 反馈
 

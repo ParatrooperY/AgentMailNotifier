@@ -1,33 +1,38 @@
+<div align="center">
+
 # Agent Mail Notifier
 
-English | [简体中文](README.md)
+**Email notifications for finished Codex / Claude Code tasks** (Tauri 2 + Rust + React)
 
-Sends you an email when a Codex or Claude Code task finishes.
-
-Leave long jobs running unattended. When a turn ends — or fails and needs you — a mail arrives.
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/ParatrooperY/AgentMailNotifier?include_prereleases)](https://github.com/ParatrooperY/AgentMailNotifier/releases)
-![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)](#known-limitations)
+
+</div>
+
+<p align="center"><b>English</b> · <a href="README.md">简体中文</a></p>
+
+## What this is
+
+Sends you an email when a Codex or Claude Code task finishes. Leave long jobs running unattended — when a turn ends, or fails and needs you, a mail arrives.
+
+The app only reads the two clients' session transcripts to decide whether a task finished; it never writes to their configuration. SMTP authorization codes are handed to Windows Credential Manager instead of being stored in the settings file.
 
 ## Features
 
-- **Separate channels.** Codex and Claude Code each have their own mailbox settings and activity history.
-- **Authorization codes stay off disk.** SMTP credentials live in Windows Credential Manager. The settings file only keeps host, port, and other non-secret fields.
-- **Presets for common providers.** QQ, NetEase, Outlook, and Gmail fill in the SMTP host and port automatically. Anything else can be entered by hand.
-- **Read-only listeners.** The app watches session transcripts to decide when a task finished. It does not patch Codex or Claude Code configuration.
-- **Stays in the tray.** Closing the window leaves it running. The tray menu can toggle either channel.
-- **Noise is filtered.** Subagent events and internal receipts are dropped. One finished turn produces one mail.
+- **Isolated channels**: separate sender mailboxes for Codex and Claude Code; separate activity history; the tray menu toggles either one on its own.
+- **Credential safety**: SMTP authorization codes go into Windows Credential Manager; the settings file keeps only host, port, encryption and other non-secret fields; the input is cleared after a successful test.
+- **Provider presets**: QQ / Foxmail, NetEase 163 / 126 / yeah.net, Outlook / Hotmail / Live and Gmail fill in host and port automatically; anything else takes a manual host, port and SSL or STARTTLS.
+- **Read-only listeners**: transcripts decide when a turn ended, so Codex's `config.toml` and Claude Code's `settings.json` are never patched; no inbound port is opened.
+- **Event filtering**: subagent events and internal receipts are dropped; one finished turn produces exactly one mail, never a duplicate for the same completion.
+- **Runs in the background**: closing the window leaves it in the system tray; the tray menu check marks show each channel's current state, and quitting stops delivery entirely.
 
 ## Screenshots
 
-**Codex**
-
-![Codex channel](docs/codex.png)
-
-**Claude Code**
-
-![Claude Code channel](docs/claudecode.png)
+<div align="center">
+<img src="docs/codex.png" alt="Codex channel" width="48%"/>&nbsp;<img src="docs/claudecode.png" alt="Claude Code channel" width="48%"/>
+<br/><sub>Codex channel · Claude Code channel</sub>
+</div>
 
 ## Install
 
@@ -61,9 +66,9 @@ Use Custom for any other provider and fill in host, port, and encryption yoursel
 
 ## Known limitations
 
-- **Windows x64 only.** Relies on Windows Credential Manager and local transcript paths.
-- **Replies cut off by the token limit are not mailed.** A turn is treated as finished on `end_turn` or `stop_sequence`. A `max_tokens` truncation is skipped.
-- **Events while the app is stopped are dropped.** There is no offline queue, so a restart does not dump a backlog of stale mail.
+- **Windows x64 only**, since it relies on Windows Credential Manager and local transcript paths.
+- **Replies cut off by the token limit are not mailed**, because a turn counts as finished on `end_turn` or `stop_sequence`, and a `max_tokens` truncation is skipped.
+- **Events while the app is stopped are dropped**, with no offline queue, so a restart does not dump a backlog of stale mail.
 - **Moving the portable exe** requires re-enabling each channel.
 
 ## Development
@@ -101,20 +106,19 @@ Artifacts land in `src-tauri/target/release/bundle/`. Auto-update is intentional
 ## Layout
 
 ```
-src/                        React UI
-src-tauri/src/              Tauri process, state, SMTP send
-src-tauri/crates/
-  notifier-core/            Event parsing, delivery rules, SMTP presets
-docs/                       README screenshots
+src/                                    React UI
+src-tauri/src/                          Tauri process, state, SMTP send
+src-tauri/crates/notifier-core/         Event parsing, delivery rules, SMTP presets
+docs/                                   App screenshots
 ```
 
-The UI lives in `src/`. `src-tauri/src/` watches transcripts and sends mail. `notifier-core` is a Tauri-free logic crate; most tests cover it.
+The UI lives in `src/`, `src-tauri/src/` watches transcripts and sends mail, and `notifier-core` is a Tauri-free logic crate covering event filtering and delivery rules.
 
 ## Safety
 
 - SMTP authorization codes are stored only in Windows Credential Manager. They are not written to the settings file, history, or the UI. The input is cleared after a successful test.
 - The app does not modify Codex or Claude Code config files. It only reads session transcripts.
-- No inbound ports, no third-party upload. Mail goes from this machine to the SMTP server you configured.
+- No inbound ports and no third-party upload, mail goes straight from this machine to the configured SMTP server.
 
 ## Feedback
 
