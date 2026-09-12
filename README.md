@@ -1,12 +1,14 @@
 # Agent Mail Notifier
 
+[English](README.en.md) | 简体中文
+
 Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。
 
 挂机跑长任务时不用一直守着终端。任务结束、或者中途失败需要你介入，邮件会告诉你。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/ParatrooperY/AgentMailNotifier?include_prereleases)](https://github.com/ParatrooperY/AgentMailNotifier/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
-![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
 
 ## 功能
 
@@ -17,12 +19,22 @@ Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。
 - **托盘常驻**：关掉窗口继续在后台跑，托盘菜单可直接开关两个通道。
 - **过滤噪音**：子代理产生的中间事件、程序内部回执不会触发邮件，一轮任务只发一封。
 
+## 截图
+
+**Codex**
+
+![Codex 通道](docs/codex.png)
+
+**Claude Code**
+
+![Claude Code 通道](docs/claudecode.png)
+
 ## 安装
 
 从 [Releases](https://github.com/ParatrooperY/AgentMailNotifier/releases) 下载：
 
-- **AgentMailNotifier-Setup.exe** — 推荐。安装到固定路径。
-- **AgentMailNotifier-Portable.exe** — 免安装，可随意放置。
+- **安装包（Setup）** — 推荐。安装到固定路径。
+- **便携版（Portable）** — 免安装，可随意放置。移动位置后需要重新启用一次通道。
 
 首个版本没有做代码签名，Windows SmartScreen 可能拦一下，点**更多信息**再点**仍要运行**即可。
 
@@ -93,6 +105,7 @@ src/                        React 前端
 src-tauri/src/              Tauri 主进程、状态管理、SMTP 发送
 src-tauri/crates/
   notifier-core/            事件解析、投递判定、SMTP 预设（纯逻辑，可单测）
+docs/                       README 截图
 ```
 
 前端负责界面，`src-tauri/src/` 负责监听会话记录和发信，`notifier-core` 是不依赖 Tauri 的纯逻辑层，事件过滤和投递条件判定都在这里，测试主要覆盖它。
@@ -103,19 +116,9 @@ src-tauri/crates/
 - 程序不修改 Codex 和 Claude Code 的配置文件，只读取会话记录。
 - 不建立任何对外监听端口，不上传数据到第三方。邮件直接从本机发到你配置的 SMTP 服务器。
 
-## 贡献
+## 反馈
 
-欢迎 Issue 和 PR。改动前建议先开 Issue 说一下方向，避免白做。
-
-提交前请确保：
-
-```bash
-npm run build && npm test
-```
-
-```bash
-cargo test --manifest-path src-tauri/Cargo.toml
-```
+遇到问题或有改进想法，请开 [Issue](https://github.com/ParatrooperY/AgentMailNotifier/issues)。目前不接受代码贡献。
 
 ## 许可
 
