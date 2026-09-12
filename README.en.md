@@ -1,6 +1,6 @@
 <h1 align="center">Agent Mail Notifier</h1>
 
-<p align="center"><b>Email notifications for finished Codex / Claude Code tasks</b> (Tauri 2 + Rust + React)</p>
+<p align="center"><b>Email notifications for finished Codex Desktop / Claude Code Desktop tasks</b> (Tauri 2 + Rust + React)</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
@@ -12,13 +12,13 @@
 
 ## What this is
 
-Sends you an email when a Codex or Claude Code task finishes. Leave long jobs running unattended — when a turn ends, or fails and needs you, a mail arrives.
+Sends you an email when a Codex Desktop or Claude Code Desktop task finishes. Leave long jobs running unattended — when a turn ends, or fails and needs you, a mail arrives.
 
 The app only reads the two clients' session transcripts to decide whether a task finished; it never writes to their configuration. SMTP authorization codes are handed to Windows Credential Manager instead of being stored in the settings file.
 
 ## Features
 
-- **Isolated channels**: separate sender mailboxes for Codex and Claude Code; separate activity history; the tray menu toggles either one on its own.
+- **Isolated channels**: separate sender mailboxes for Codex Desktop and Claude Code Desktop; separate activity history; the tray menu toggles either one on its own.
 - **Credential safety**: SMTP authorization codes go into Windows Credential Manager; the settings file keeps only host, port, encryption and other non-secret fields; the input is cleared after a successful test.
 - **Provider presets**: QQ / Foxmail, NetEase 163 / 126 / yeah.net, Outlook / Hotmail / Live and Gmail fill in host and port automatically; anything else takes a manual host, port and SSL or STARTTLS.
 - **Read-only listeners**: transcripts decide when a turn ended, so Codex's `config.toml` and Claude Code's `settings.json` are never patched; no inbound port is opened.
@@ -27,11 +27,11 @@ The app only reads the two clients' session transcripts to decide whether a task
 
 ## Screenshots
 
-**Codex channel**
+**Codex Desktop**
 
 ![Codex channel](docs/codex.png)
 
-**Claude Code channel**
+**Claude Code Desktop**
 
 ![Claude Code channel](docs/claudecode.png)
 

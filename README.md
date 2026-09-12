@@ -1,6 +1,6 @@
 <h1 align="center">Agent Mail Notifier</h1>
 
-<p align="center"><b>Codex / Claude Code 任务完成邮件通知</b>（Tauri 2 + Rust + React）</p>
+<p align="center"><b>Codex Desktop / Claude Code Desktop 任务完成邮件通知</b>（Tauri 2 + Rust + React）</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
@@ -12,13 +12,13 @@
 
 ## 这是什么
 
-Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。挂机跑长任务时不用一直守着终端，任务结束、或者中途失败需要你介入，邮件会告诉你。
+Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮件。挂机跑长任务时不用一直守着终端，任务结束、或者中途失败需要你介入，邮件会告诉你。
 
 程序只读取两个客户端的会话记录来判断任务是否完成，不往它们的配置里写任何东西；SMTP 授权码交给 Windows 凭据管理器保管，不落盘到配置文件。
 
 ## 功能
 
-- **通道隔离**：Codex 与 Claude Code 分别配置发件邮箱；通知记录分开保存；托盘菜单可单独开关任一通道。
+- **通道隔离**：Codex Desktop 与 Claude Code Desktop 分别配置发件邮箱；通知记录分开保存；托盘菜单可单独开关任一通道。
 - **凭据安全**：SMTP 授权码存入 Windows 凭据管理器；配置文件只留主机、端口、加密方式等非敏感项；测试成功后输入框自动清空。
 - **邮箱预设**：QQ / Foxmail、网易 163 / 126 / yeah.net、Outlook / Hotmail / Live、Gmail 自动补全主机与端口；其它邮箱手填主机、端口、SSL 或 STARTTLS。
 - **只读监听**：读取会话记录判断一轮结束，不修改 Codex 的 `config.toml` 或 Claude Code 的 `settings.json`；不建立对外监听端口。
@@ -27,13 +27,13 @@ Codex 和 Claude Code 跑完一轮任务后，给你发一封邮件。挂机跑�
 
 ## 截图
 
-**Codex 通道**
+**Codex Desktop**
 
-![Codex 通道](docs/codex.png)
+![Codex](docs/codex.png)
 
-**Claude Code 通道**
+**Claude Code Desktop**
 
-![Claude Code 通道](docs/claudecode.png)
+![Claude Code](docs/claudecode.png)
 
 ## 安装
 
