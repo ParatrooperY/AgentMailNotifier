@@ -111,7 +111,7 @@ struct CodexRolloutCompletion {
 struct ClaudeTranscriptCompletion {
     session_id: String,
     turn_id: String,
-    chat: String,
+    chat: Option<String>,
     problem: String,
     detail: String,
     working_directory: Option<String>,
@@ -504,8 +504,7 @@ fn deliver_runtime_event(state: &AppState, envelope: HookEnvelope) {
     let chat = event_chat
         .or_else(|| pending.as_ref().map(|turn| turn.chat.clone()))
         .or_else(|| codex_context.as_ref().and_then(|context| context.chat.clone()))
-        .or(session_id)
-        .unwrap_or_else(|| "未提供".to_owned());
+        .or(session_id);
     let working_directory = pending.as_ref()
         .and_then(|turn| turn.working_directory.as_deref())
         .or(event_working_directory.as_deref())
@@ -517,7 +516,7 @@ fn deliver_runtime_event(state: &AppState, envelope: HookEnvelope) {
         if !current.smtp.verified || !current.integration.enabled_preference { return; }
         (current.smtp.clone(), title)
     };
-    let result = send_completion_email(kind, &smtp, &title, &detail, working_directory, &chat, elapsed);
+    let result = send_completion_email(kind, &smtp, &title, &detail, working_directory, chat.as_deref(), elapsed);
     let mut stored = match state.value.lock() { Ok(value) => value, Err(_) => return };
     let current = channel_mut(&mut stored, kind);
     let entry = HistoryEntry { id: uuid::Uuid::new_v4().to_string(), source: source_name(kind).into(), title, result: if result.is_ok() { "sent".into() } else { "failed".into() }, detail: result.err().unwrap_or(detail), occurred_at: Local::now().format("%Y-%m-%d %H:%M").to_string() };
@@ -680,13 +679,49 @@ fn limit_notification_text(text: &str, max_chars: usize) -> String {
     limited
 }
 
+// The desktop client runs each chat in a per-session sandbox whose working
+// directory is a scratch folder, so its last segment names nothing useful.
+fn notification_project(working_directory: Option<&str>) -> Option<String> {
+    let path = working_directory?;
+    if path.contains("local-agent-mode-sessions") { return None; }
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+fn completion_email_body(
+    source: &str,
+    title: &str,
+    detail: &str,
+    working_directory: Option<&str>,
+    chat: Option<&str>,
+    elapsed: Option<Duration>,
+) -> String {
+    let duration = elapsed.map(format_elapsed).unwrap_or_else(|| "未记录".to_owned());
+    let mut body = format!(
+        "{source} 本轮工作已结束。\n\n状态：已返回结果\n完成时间：{}\n运行耗时：{duration}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+    );
+    if let Some(project) = notification_project(working_directory) {
+        body.push_str(&format!("项目：{project}\n"));
+    }
+    if let Some(chat) = chat.map(str::trim).filter(|chat| !chat.is_empty()) {
+        body.push_str(&format!("聊天：{chat}\n"));
+    }
+    body.push_str(&format!("问题：{title}\n\n回复：\n{detail}"));
+    body
+}
+
 fn send_completion_email(
     kind: IntegrationKind,
     smtp: &StoredSmtp,
     title: &str,
     detail: &str,
     working_directory: Option<&str>,
-    chat: &str,
+    chat: Option<&str>,
     elapsed: Option<Duration>,
 ) -> Result<(), String> {
     let title = limit_notification_text(title, 50);
@@ -698,16 +733,7 @@ fn send_completion_email(
     let transport = smtp_transport(email, &password, host, port, encryption)?;
     let source = source_name(kind);
     let mailbox = email.parse::<lettre::message::Mailbox>().map_err(|_| "邮箱格式无效，请检查邮箱地址".to_owned())?;
-    let project = working_directory
-        .and_then(|path| Path::new(path).file_name())
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("未提供");
-    let duration = elapsed.map(format_elapsed).unwrap_or_else(|| "未记录".to_owned());
-    let body = format!(
-        "{source} 本轮工作已结束。\n\n状态：已返回结果\n完成时间：{}\n运行耗时：{duration}\n项目：{project}\n聊天：{chat}\n问题：{title}\n\n回复：\n{detail}",
-        Local::now().format("%Y-%m-%d %H:%M:%S"),
-    );
+    let body = completion_email_body(source, &title, detail, working_directory, chat, elapsed);
     let message = Message::builder().from(mailbox.clone()).to(mailbox).subject(format!("[{source}] {title}")).body(body).map_err(|_| "无法生成通知邮件，请稍后重试".to_owned())?;
     transport.send(&message).map_err(|error| smtp_error(error.to_string()))?;
     Ok(())
@@ -989,8 +1015,7 @@ fn read_codex_rollout_completion(path: &Path, target_turn_id: &str) -> Option<Co
 fn deliver_codex_rollout_completion(state: &AppState, completion: CodexRolloutCompletion) {
     let chat = std::env::var_os("USERPROFILE")
         .map(PathBuf::from)
-        .and_then(|home| read_codex_chat_title(&home.join(".codex").join("session_index.jsonl"), &completion.thread_id))
-        .unwrap_or(completion.thread_id.clone());
+        .and_then(|home| read_codex_chat_title(&home.join(".codex").join("session_index.jsonl"), &completion.thread_id));
     let smtp = {
         let Ok(stored) = state.value.lock() else { return; };
         let current = &stored.codex;
@@ -1003,7 +1028,7 @@ fn deliver_codex_rollout_completion(state: &AppState, completion: CodexRolloutCo
         &completion.problem,
         &completion.detail,
         completion.working_directory.as_deref(),
-        &chat,
+        chat.as_deref(),
         completion.elapsed,
     );
     let Ok(mut stored) = state.value.lock() else { return; };
@@ -1238,7 +1263,7 @@ fn read_claude_transcript_completion(path: &Path, target_completion_id: &str) ->
         end.signed_duration_since(start).to_std().ok()
     });
     Some(ClaudeTranscriptCompletion {
-        chat: custom_title.or(ai_title).unwrap_or_else(|| session_id.clone()),
+        chat: custom_title.or(ai_title).or_else(|| desktop_session_title(&session_id)),
         session_id,
         turn_id,
         problem,
@@ -1262,7 +1287,7 @@ fn deliver_claude_transcript_completion(state: &AppState, completion: ClaudeTran
         &completion.problem,
         &completion.detail,
         completion.working_directory.as_deref(),
-        &completion.chat,
+        completion.chat.as_deref(),
         completion.elapsed,
     );
     let Ok(mut stored) = state.value.lock() else { return; };
@@ -1290,6 +1315,40 @@ fn claude_transcript_roots_from(user_profile: Option<&Path>, local_app_data: Opt
         roots.push(local.join("Claude-3p").join("local-agent-mode-sessions"));
     }
     roots
+}
+
+// Desktop chat titles live in per-session metadata files rather than in the
+// transcript. Those files also hold the signed-in account address, so only
+// cliSessionId and title are ever read out of them.
+fn desktop_session_title_in(root: &Path, session_id: &str) -> Option<String> {
+    fn walk(directory: &Path, session_id: &str, depth: usize) -> Option<String> {
+        if depth > 4 { return None; }
+        let entries = fs::read_dir(directory).ok()?;
+        let mut directories = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                directories.push(path);
+                continue;
+            }
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            if !name.starts_with("local_") || !name.ends_with(".json") { continue; }
+            let Ok(text) = fs::read_to_string(&path) else { continue; };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { continue; };
+            if value.get("cliSessionId").and_then(serde_json::Value::as_str) != Some(session_id) { continue; }
+            if let Some(title) = value.get("title").and_then(serde_json::Value::as_str) {
+                let title = title.trim();
+                if !title.is_empty() { return Some(title.to_owned()); }
+            }
+        }
+        directories.into_iter().find_map(|path| walk(&path, session_id, depth + 1))
+    }
+    walk(root, session_id, 0)
+}
+
+fn desktop_session_title(session_id: &str) -> Option<String> {
+    let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?.join("Claude-3p");
+    desktop_session_title_in(&root, session_id)
 }
 
 fn claude_transcript_roots() -> Vec<PathBuf> {
@@ -1784,12 +1843,58 @@ mod tests {
         file.write_all(next_prompt.as_bytes()).unwrap();
         assert!(read_claude_transcript_completion(&path, "assistant-1").is_none());
 
-        assert_eq!(parsed.chat, "重命名聊天");
+        assert_eq!(parsed.chat.as_deref(), Some("重命名聊天"));
         assert_eq!(parsed.problem, "当前问题");
         assert_eq!(parsed.detail, "最终回复");
         assert_eq!(parsed.working_directory.as_deref(), Some("D:\\work"));
         assert_eq!(parsed.elapsed, Some(Duration::from_secs(5)));
         fs::remove_file(path).expect("transcript should be removed");
+    }
+
+    #[test]
+    fn a_notification_body_omits_the_project_line_without_a_real_working_directory() {
+        let sandbox = "C:\\Users\\demo\\AppData\\Local\\Claude-3p\\local-agent-mode-sessions\\aaaa\\0000\\bbbb\\outputs";
+
+        let without = super::completion_email_body("Claude Code", "问题", "回复", None, None, None);
+        let sandboxed = super::completion_email_body("Claude Code", "问题", "回复", Some(sandbox), None, None);
+        let with_project = super::completion_email_body("Claude Code", "问题", "回复", Some("D:\\work\\MyProject"), None, None);
+
+        assert!(!without.contains("项目："));
+        assert!(!sandboxed.contains("项目："), "a sandbox scratch directory is not a project");
+        assert!(!sandboxed.contains("outputs"));
+        assert!(with_project.contains("项目：MyProject"));
+    }
+
+    #[test]
+    fn a_notification_body_omits_the_chat_line_when_no_title_was_found() {
+        let untitled = super::completion_email_body("Claude Code", "问题", "回复", None, None, None);
+        let titled = super::completion_email_body("Claude Code", "问题", "回复", None, Some("Blender MCP 安装"), None);
+
+        assert!(!untitled.contains("聊天："), "an unresolved title must not fall back to a session id");
+        assert!(untitled.contains("问题：问题"));
+        assert!(titled.contains("聊天：Blender MCP 安装"));
+    }
+
+    #[test]
+    fn a_desktop_session_title_is_read_from_the_matching_metadata_file() {
+        let root = std::env::temp_dir().join(format!("agent-mail-notifier-title-{}", uuid::Uuid::new_v4()));
+        let store = root.join("local-agent-mode-sessions").join("aaaa").join("0000");
+        fs::create_dir_all(&store).expect("session store should be created");
+        // Real metadata files also carry an account address; only cliSessionId
+        // and title may ever be read out of them.
+        fs::write(
+            store.join("local_bbbb.json"),
+            serde_json::json!({"cliSessionId":"session-1","title":"Blender MCP 安装","emailAddress":"must-not-be-read"}).to_string(),
+        ).expect("metadata should be written");
+        fs::write(
+            store.join("local_cccc.json"),
+            serde_json::json!({"cliSessionId":"session-2","title":"另一个会话"}).to_string(),
+        ).expect("metadata should be written");
+
+        assert_eq!(super::desktop_session_title_in(&root, "session-1"), Some("Blender MCP 安装".to_owned()));
+        assert_eq!(super::desktop_session_title_in(&root, "session-2"), Some("另一个会话".to_owned()));
+        assert_eq!(super::desktop_session_title_in(&root, "session-3"), None);
+        fs::remove_dir_all(root).expect("temporary tree should be removed");
     }
 
     #[test]
