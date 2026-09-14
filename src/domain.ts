@@ -52,7 +52,6 @@ export interface NotifierBridge {
   getDashboard(): Promise<DashboardState>;
   subscribeDashboardChanges?: (handler: () => void) => Promise<() => void>;
   saveAndTestSmtp(kind: IntegrationKind, draft: SmtpDraft): Promise<DashboardState>;
-  installIntegration(kind: IntegrationKind): Promise<DashboardState>;
   setIntegrationEnabled(
     kind: IntegrationKind,
     enabled: boolean,

@@ -21,7 +21,6 @@ function bridgeReturning(state: DashboardState, overrides: Partial<NotifierBridg
   return {
     getDashboard: async () => state,
     saveAndTestSmtp: async () => state,
-    installIntegration: async () => state,
     setIntegrationEnabled: async () => state,
     clearHistory: async () => state,
     openLogFolder: async () => undefined,

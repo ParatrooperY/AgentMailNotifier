@@ -1,19 +1,18 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    io::{Read, Seek, SeekFrom, Write},
-    net::{TcpListener, TcpStream},
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use agent_mail_notifier_core::{
     IntegrationKind, SmtpEncryption, codex_hook_file_is_empty, restore_claude_hooks_if_owned,
     restore_codex_hook_if_owned, restore_codex_timing_hook_if_owned, smtp_preset_for,
 };
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local};
 use keyring::Entry;
 use lettre::{
     Message, SmtpTransport, Transport,
@@ -76,20 +75,6 @@ struct AppState {
     path: PathBuf,
     value: Mutex<StoredState>,
     tray: Mutex<Option<TrayControls>>,
-    turns: Mutex<HashMap<String, PendingTurn>>,
-}
-
-struct PendingTurn {
-    started_at: Instant,
-    chat: String,
-    problem: String,
-    working_directory: Option<String>,
-}
-
-struct CodexContext {
-    chat: Option<String>,
-    working_directory: Option<String>,
-    elapsed: Option<Duration>,
 }
 
 #[derive(Default)]
@@ -130,18 +115,6 @@ fn sync_tray_controls(controls: &TrayControls, stored: &StoredState) {
     let _ = controls.claude.set_enabled(stored.claude.smtp.verified);
 }
 
-#[derive(Deserialize, Serialize)]
-struct RuntimeRecord { port: u16, token: String }
-
-#[derive(Deserialize, Serialize)]
-struct HookEnvelope {
-    token: String,
-    integration: String,
-    payload: String,
-    #[serde(default)]
-    working_directory: Option<String>,
-}
-
 impl AppState {
     fn load() -> Self {
         let root = std::env::var_os("LOCALAPPDATA")
@@ -153,7 +126,7 @@ impl AppState {
             Ok(text) => migrate_legacy_state(&text).unwrap_or_else(|_| (StoredState::current(), true)),
             Err(_) => (StoredState::current(), false),
         };
-        let state = Self { path, value: Mutex::new(value), tray: Mutex::new(None), turns: Mutex::new(HashMap::new()) };
+        let state = Self { path, value: Mutex::new(value), tray: Mutex::new(None) };
         if migrated {
             let credential_migration = state.value.lock().ok().map(|value| migrate_legacy_credentials(&value));
             if !matches!(credential_migration, Some(LegacyCredentialMigration::Failed)) {
@@ -452,143 +425,6 @@ fn smtp_transport(email: &str, password: &str, host: &str, port: u16, encryption
     Ok(SmtpTransport::relay(host).map_err(|error| smtp_error(error.to_string()))?.port(port).tls(tls).credentials(Credentials::new(email.to_owned(), password.to_owned())).build())
 }
 
-fn deliver_runtime_event(state: &AppState, envelope: HookEnvelope) {
-    // Older installations may still invoke our former hooks. Ignore those
-    // callbacks so the read-only listeners remain the only notification source.
-    if matches!(envelope.integration.as_str(), "codex" | "claude") { return; }
-    let kind = match envelope.integration.as_str() { "codex" => IntegrationKind::Codex, "claude" => IntegrationKind::Claude, _ => return };
-    if record_turn_start(state, kind, &envelope) { return; }
-    let notification = if kind == IntegrationKind::Claude {
-        serde_json::from_str::<serde_json::Value>(&envelope.payload).ok().and_then(|event| {
-            claude_notification_content_from_event(&event).map(|(title, detail)| {
-                (title, detail, event_string(&event, &["session_id", "session-id"]), None)
-            })
-        })
-    } else {
-        serde_json::from_str::<agent_mail_notifier_core::CodexEvent>(&envelope.payload).ok().and_then(|event| {
-            if agent_mail_notifier_core::classify_codex_event(&event, None, None) == agent_mail_notifier_core::EventDisposition::Deliver {
-                Some((
-                    agent_mail_notifier_core::resolve_codex_title(&event, None),
-                    notification_preview(&event.last_assistant_message),
-                    Some(event.thread_id),
-                    Some(event.turn_id),
-                ))
-            } else {
-                None
-            }
-        })
-    };
-    let Some((fallback_title, detail, session_id, turn_id)) = notification else { return; };
-    let event_working_directory = serde_json::from_str::<serde_json::Value>(&envelope.payload)
-        .ok()
-        .and_then(|event| event_string(&event, &["cwd"]));
-    let event_chat = if kind == IntegrationKind::Claude {
-        serde_json::from_str::<serde_json::Value>(&envelope.payload).ok()
-            .and_then(|event| event_string(&event, &["transcript_path"]))
-            .and_then(|path| read_claude_session_title(&path).or_else(|| read_claude_first_user_title(&path)))
-    } else {
-        None
-    };
-    let codex_context = if kind == IntegrationKind::Codex {
-        session_id.as_deref().zip(turn_id.as_deref()).and_then(|(thread_id, turn_id)| resolve_codex_context(thread_id, turn_id))
-    } else {
-        None
-    };
-    let pending = take_pending_turn(state, kind, session_id.as_deref(), turn_id.as_deref());
-    let elapsed = pending.as_ref().map(|turn| turn.started_at.elapsed()).or_else(|| codex_context.as_ref().and_then(|context| context.elapsed));
-    let title = pending.as_ref()
-        .map(|turn| turn.problem.clone())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(fallback_title);
-    let chat = event_chat
-        .or_else(|| pending.as_ref().map(|turn| turn.chat.clone()))
-        .or_else(|| codex_context.as_ref().and_then(|context| context.chat.clone()))
-        .or(session_id);
-    let working_directory = pending.as_ref()
-        .and_then(|turn| turn.working_directory.as_deref())
-        .or(event_working_directory.as_deref())
-        .or_else(|| codex_context.as_ref().and_then(|context| context.working_directory.as_deref()))
-        .or(envelope.working_directory.as_deref());
-    let (smtp, title) = {
-        let stored = match state.value.lock() { Ok(value) => value, Err(_) => return };
-        let current = channel(&stored, kind);
-        if !current.smtp.verified || !current.integration.enabled_preference { return; }
-        (current.smtp.clone(), title)
-    };
-    let result = send_completion_email(kind, &smtp, &title, &detail, working_directory, chat.as_deref(), elapsed);
-    let mut stored = match state.value.lock() { Ok(value) => value, Err(_) => return };
-    let current = channel_mut(&mut stored, kind);
-    let entry = HistoryEntry { id: uuid::Uuid::new_v4().to_string(), source: source_name(kind).into(), title, result: if result.is_ok() { "sent".into() } else { "failed".into() }, detail: result.err().unwrap_or(detail), occurred_at: Local::now().format("%Y-%m-%d %H:%M").to_string() };
-    current.history.push_front(entry);
-    current.history.truncate(100);
-    let _ = state.save(&stored);
-}
-
-fn record_turn_start(state: &AppState, kind: IntegrationKind, envelope: &HookEnvelope) -> bool {
-    let Ok(event) = serde_json::from_str::<serde_json::Value>(&envelope.payload) else { return false; };
-    if event_string(&event, &["hook_event_name", "hook-event-name"]).as_deref() != Some("UserPromptSubmit") { return false; }
-    let session_id = event_string(&event, &["session_id", "session-id"]);
-    let turn_id = event_string(&event, &["turn_id", "turn-id"]);
-    let Some(key) = turn_key(kind, session_id.as_deref(), turn_id.as_deref()) else { return true; };
-    let problem = event_string(&event, &["prompt"])
-        .map(|value| limit_notification_text(&sanitize_problem_text(&value), 50))
-        .unwrap_or_else(|| "未提供".to_owned());
-    let chat = if kind == IntegrationKind::Codex {
-        session_id.as_deref().and_then(|id| {
-            let root = std::env::var_os("USERPROFILE").map(PathBuf::from)?.join(".codex");
-            read_codex_chat_title(&root.join("session_index.jsonl"), id)
-        })
-    } else {
-        event_string(&event, &["transcript_path"])
-            .and_then(|path| read_claude_session_title(&path).or_else(|| read_claude_first_user_title(&path)))
-            .or_else(|| event_string(&event, &["prompt"]))
-    }.or_else(|| session_id.clone()).unwrap_or_else(|| "未提供".to_owned());
-    let working_directory = event_string(&event, &["cwd"]).or_else(|| envelope.working_directory.clone());
-    if let Ok(mut turns) = state.turns.lock() {
-        turns.insert(key, PendingTurn { started_at: Instant::now(), chat, problem, working_directory });
-    }
-    true
-}
-
-fn take_pending_turn(state: &AppState, kind: IntegrationKind, session_id: Option<&str>, turn_id: Option<&str>) -> Option<PendingTurn> {
-    let key = turn_key(kind, session_id, turn_id)?;
-    state.turns.lock().ok()?.remove(&key)
-}
-
-fn turn_key(kind: IntegrationKind, session_id: Option<&str>, turn_id: Option<&str>) -> Option<String> {
-    match kind {
-        IntegrationKind::Codex => turn_id.filter(|value| !value.trim().is_empty()).map(|value| format!("codex:{value}")),
-        IntegrationKind::Claude => session_id.filter(|value| !value.trim().is_empty()).map(|value| format!("claude:{value}")),
-    }
-}
-
-fn event_string(event: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| event.get(*key).and_then(value_text))
-}
-
-#[cfg(test)]
-fn claude_notification_content(payload: &str) -> Option<(String, String)> {
-    let event = serde_json::from_str::<serde_json::Value>(payload).ok()?;
-    claude_notification_content_from_event(&event)
-}
-
-fn claude_notification_content_from_event(event: &serde_json::Value) -> Option<(String, String)> {
-    let event_name = event.get("hook_event_name").and_then(serde_json::Value::as_str)?;
-    if !agent_mail_notifier_core::claude_event_supported(event_name) { return None; }
-    let transcript_path = event.get("transcript_path").and_then(serde_json::Value::as_str);
-    let title = ["prompt", "input", "user_message"]
-        .iter()
-        .find_map(|key| event.get(*key).and_then(value_text))
-        .or_else(|| transcript_path.and_then(read_claude_transcript_title))
-        .unwrap_or_else(|| "Claude Code 任务完成".to_owned());
-    let summary = ["last_assistant_message", "lastAssistantMessage", "summary", "message"]
-        .iter()
-        .find_map(|key| event.get(*key).and_then(value_text))
-        .or_else(|| transcript_path.and_then(read_claude_transcript_summary))
-        .unwrap_or_else(|| "Claude Code 已完成任务，但 Hook 未提供摘要".to_owned());
-    Some((limit_notification_text(&sanitize_problem_text(&title), 50), notification_preview(&summary)))
-}
-
 fn value_text(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_owned()),
@@ -601,25 +437,7 @@ fn value_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn read_claude_transcript_summary(path: &str) -> Option<String> {
-    read_claude_transcript_message(path, "assistant")
-}
-
-fn read_claude_transcript_title(path: &str) -> Option<String> {
-    read_claude_transcript_message(path, "user")
-}
-
-fn read_claude_first_user_title(path: &str) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    text.lines().find_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
-        let is_user = value.get("type").and_then(serde_json::Value::as_str) == Some("user")
-            || value.pointer("/message/role").and_then(serde_json::Value::as_str) == Some("user");
-        if !is_user { return None; }
-        value.pointer("/message/content").and_then(value_text).or_else(|| value.get("content").and_then(value_text))
-    })
-}
-
+#[cfg(test)]
 fn read_claude_session_title(path: &str) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
     text.lines().filter_map(|line| {
@@ -630,17 +448,6 @@ fn read_claude_session_title(path: &str) -> Option<String> {
         value.get("customTitle").and_then(value_text)
             .or_else(|| value.get("custom_title").and_then(value_text))
     }).last()
-}
-
-fn read_claude_transcript_message(path: &str, role: &str) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    text.lines().rev().find_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
-        let is_role = value.get("type").and_then(serde_json::Value::as_str) == Some(role)
-            || value.pointer("/message/role").and_then(serde_json::Value::as_str) == Some(role);
-        if !is_role { return None; }
-        value.pointer("/message/content").and_then(value_text).or_else(|| value.get("content").and_then(value_text))
-    })
 }
 
 fn notification_preview(text: &str) -> String {
@@ -738,37 +545,10 @@ fn send_completion_email(
     Ok(())
 }
 
-fn start_runtime_server(state: Arc<AppState>) -> Result<(), String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
-    let token = uuid::Uuid::new_v4().to_string();
-    let record = RuntimeRecord { port: listener.local_addr().map_err(|error| error.to_string())?.port(), token: token.clone() };
-    let path = state.runtime_path();
-    fs::create_dir_all(path.parent().ok_or("无效的运行目录")?).map_err(|error| error.to_string())?;
-    fs::write(path, serde_json::to_vec(&record).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
-    thread::spawn(move || for stream in listener.incoming().flatten() { handle_hook_connection(&state, &token, stream); });
-    Ok(())
-}
-
-fn handle_hook_connection(state: &AppState, token: &str, mut stream: TcpStream) {
-    let mut body = String::new();
-    if stream.read_to_string(&mut body).is_ok() && let Ok(envelope) = serde_json::from_str::<HookEnvelope>(&body) && envelope.token == token { deliver_runtime_event(state, envelope); }
-}
-
 fn run_hook_mode() -> bool {
     let mut arguments = std::env::args().skip(1);
     let Some(mode) = arguments.next() else { return false; };
     match mode.as_str() {
-        "--hook" => {
-            let Some(integration) = arguments.next() else { return true; };
-            let mut input = String::new();
-            let _ = std::io::stdin().read_to_string(&mut input);
-            let payload = if input.trim().is_empty() { arguments.next().unwrap_or_default() } else { input };
-            let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("AgentMailNotifier");
-            let Ok(record) = fs::read_to_string(root.join("runtime.json")).ok().and_then(|body| serde_json::from_str::<RuntimeRecord>(&body).ok()).ok_or(()) else { return true; };
-            let working_directory = std::env::current_dir().ok().and_then(|path| path.into_os_string().into_string().ok());
-            if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", record.port)) { let _ = stream.write_all(serde_json::to_string(&HookEnvelope { token: record.token, integration, payload, working_directory }).unwrap_or_default().as_bytes()); }
-            true
-        }
         "--uninstall-cleanup" => {
             let purge = arguments.next().as_deref() == Some("--purge");
             if cleanup_application(purge).is_err() { std::process::exit(1); }
@@ -834,36 +614,6 @@ fn format_elapsed(duration: Duration) -> String {
     format!("{}小时{}分{}秒", minutes / 60, minutes % 60, seconds)
 }
 
-fn resolve_codex_context(thread_id: &str, turn_id: &str) -> Option<CodexContext> {
-    let root = std::env::var_os("USERPROFILE").map(PathBuf::from)?.join(".codex");
-    let chat = read_codex_chat_title(&root.join("session_index.jsonl"), thread_id);
-    let path = find_codex_rollout(&root.join("sessions"), thread_id)?;
-    let text = fs::read_to_string(path).ok()?;
-    let mut working_directory = None;
-    let mut started_at = None;
-    for line in text.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue; };
-        match value.get("type").and_then(serde_json::Value::as_str) {
-            Some("session_meta") => {
-                working_directory = value.pointer("/payload/cwd").and_then(serde_json::Value::as_str).map(str::to_owned);
-            }
-            Some("turn_context") if value.pointer("/payload/turn_id").and_then(serde_json::Value::as_str) == Some(turn_id) => {
-                started_at = value.get("timestamp").and_then(serde_json::Value::as_str).map(str::to_owned);
-                if working_directory.is_none() {
-                    working_directory = value.pointer("/payload/cwd").and_then(serde_json::Value::as_str).map(str::to_owned);
-                }
-                break;
-            }
-            _ => {}
-        }
-    }
-    let elapsed = started_at.and_then(|timestamp| {
-        DateTime::parse_from_rfc3339(&timestamp).ok()
-            .and_then(|start| Utc::now().signed_duration_since(start.with_timezone(&Utc)).to_std().ok())
-    });
-    Some(CodexContext { chat, working_directory, elapsed })
-}
-
 fn read_codex_chat_title(path: &Path, thread_id: &str) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
     text.lines().filter_map(|line| {
@@ -871,27 +621,6 @@ fn read_codex_chat_title(path: &Path, thread_id: &str) -> Option<String> {
         if value.get("id").and_then(serde_json::Value::as_str) != Some(thread_id) { return None; }
         value.get("thread_name").and_then(serde_json::Value::as_str).filter(|name| !name.trim().is_empty()).map(str::to_owned)
     }).last()
-}
-
-fn find_codex_rollout(root: &Path, thread_id: &str) -> Option<PathBuf> {
-    for year in fs::read_dir(root).ok()?.flatten() {
-        if !year.path().is_dir() { continue; }
-        for month in fs::read_dir(year.path()).ok()?.flatten() {
-            if !month.path().is_dir() { continue; }
-            for day in fs::read_dir(month.path()).ok()?.flatten() {
-                if !day.path().is_dir() { continue; }
-                for file in fs::read_dir(day.path()).ok()?.flatten() {
-                    let path = file.path();
-                    if path.extension().and_then(|value| value.to_str()) == Some("jsonl")
-                        && path.file_name().and_then(|value| value.to_str()).is_some_and(|name| name.contains(thread_id))
-                    {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 fn collect_codex_rollouts(root: &Path, files: &mut Vec<PathBuf>) {
@@ -1471,16 +1200,6 @@ fn codex_timing_command(executable: &str) -> String {
 }
 
 #[tauri::command]
-fn install_integration(kind: IntegrationKind, state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
-    let mut stored = state.value.lock().map_err(|_| "设置锁不可用")?;
-    if !channel(&stored, kind).smtp.verified { return Err("请先完成该通道的 SMTP 测试".into()); }
-    channel_mut(&mut stored, kind).integration.installed = true;
-    state.save(&stored)?;
-    state.sync_tray(&stored);
-    Ok(dashboard(&stored))
-}
-
-#[tauri::command]
 fn set_integration_enabled(kind: IntegrationKind, enabled: bool, state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
     let mut stored = state.value.lock().map_err(|_| "设置锁不可用")?;
     let current = channel_mut(&mut stored, kind);
@@ -1584,8 +1303,6 @@ pub fn run() {
                 .map_err(std::io::Error::other)?;
             start_claude_transcript_listener(setup_state.clone())
                 .map_err(std::io::Error::other)?;
-            start_runtime_server(setup_state.clone())
-                .map_err(std::io::Error::other)?;
             setup_tray(app, setup_state.clone())?;
             if let Some(window) = app.get_webview_window("main") {
                 let window_for_close = window.clone();
@@ -1598,7 +1315,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_dashboard, save_and_test_smtp, install_integration, set_integration_enabled, clear_history, open_log_folder, exit_application])
+        .invoke_handler(tauri::generate_handler![get_dashboard, save_and_test_smtp, set_integration_enabled, clear_history, open_log_folder, exit_application])
         .build(tauri::generate_context!())
         .expect("运行 Agent Mail Notifier 时发生错误");
     app.run(move |_app, event| {
@@ -1778,33 +1495,6 @@ mod tests {
             select_claude_completion_ids(ids, true),
             vec!["current".to_owned()]
         );
-    }
-
-    #[test]
-    fn claude_hook_summary_uses_last_assistant_message() {
-        let payload = r#"{"hook_event_name":"Stop","last_assistant_message":"已完成任务摘要"}"#;
-
-        assert_eq!(
-            super::claude_notification_content(payload),
-            Some(("Claude Code 任务完成".to_owned(), "已完成任务摘要".to_owned()))
-        );
-    }
-
-    #[test]
-    fn claude_hook_summary_reads_the_latest_assistant_transcript_message() {
-        let path = std::env::temp_dir().join(format!("agent-mail-notifier-transcript-{}.jsonl", uuid::Uuid::new_v4()));
-        fs::write(
-            &path,
-            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"开始\"}}\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"最后一条任务摘要\"}]}}\n",
-        )
-        .expect("transcript should be written");
-        let payload = serde_json::json!({ "hook_event_name": "Stop", "transcript_path": path }).to_string();
-
-        assert_eq!(
-            super::claude_notification_content(&payload),
-            Some(("开始".to_owned(), "最后一条任务摘要".to_owned()))
-        );
-        fs::remove_file(path).expect("transcript should be removed");
     }
 
     #[test]

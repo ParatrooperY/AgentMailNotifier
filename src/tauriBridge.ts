@@ -12,8 +12,6 @@ export const tauriBridge: NotifierBridge = {
   subscribeDashboardChanges: (handler) => listen("dashboard-changed", handler),
   saveAndTestSmtp: (kind: IntegrationKind, draft: SmtpDraft) =>
     invoke("save_and_test_smtp", { kind, draft }),
-  installIntegration: (kind: IntegrationKind) =>
-    invoke("install_integration", { kind }),
   setIntegrationEnabled: (kind: IntegrationKind, enabled: boolean) =>
     invoke("set_integration_enabled", { kind, enabled }),
   clearHistory: (kind: IntegrationKind) => invoke("clear_history", { kind }),

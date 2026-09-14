@@ -1,14 +1,11 @@
-use agent_mail_notifier_core::{
-    install_codex_hook, restore_codex_hook, restore_codex_hook_if_owned,
-};
+use agent_mail_notifier_core::{restore_codex_hook, restore_codex_hook_if_owned};
 
 #[test]
 fn restores_only_the_previous_notify_callback_when_uninstalling() {
-    let original = "model = \"gpt-5.6-sol\"\nnotify = [\"C:\\\\Tools\\\\computer-use.exe\", \"turn-ended\"]\n";
-    let installed = install_codex_hook(original, r"C:\Apps\AgentMailNotifier.exe").unwrap();
-    let current = format!("{}\n[desktop]\nappearanceTheme = \"dark\"\n", installed.updated_config);
+    let current = "model = \"gpt-5.6-sol\"\nnotify = [\"C:\\\\Apps\\\\AgentMailNotifier.exe\", \"--hook\", \"codex\"]\n[desktop]\nappearanceTheme = \"dark\"\n";
+    let previous = vec![r"C:\Tools\computer-use.exe".to_owned(), "turn-ended".to_owned()];
 
-    let restored = restore_codex_hook(&current, installed.previous_notify.as_deref()).unwrap();
+    let restored = restore_codex_hook(current, Some(&previous)).unwrap();
 
     assert!(restored.contains("computer-use.exe"));
     assert!(!restored.contains("AgentMailNotifier.exe"));
