@@ -680,10 +680,10 @@ fn limit_notification_text(text: &str, max_chars: usize) -> String {
 }
 
 // The desktop client runs each chat in a per-session sandbox whose working
-// directory is a scratch folder, so its last segment names nothing useful.
+// directory is a scratch folder, so name the mode rather than that folder.
 fn notification_project(working_directory: Option<&str>) -> Option<String> {
     let path = working_directory?;
-    if path.contains("local-agent-mode-sessions") { return None; }
+    if path.contains("local-agent-mode-sessions") { return Some("Cowork".to_owned()); }
     Path::new(path)
         .file_name()
         .and_then(|name| name.to_str())
@@ -1852,16 +1852,16 @@ mod tests {
     }
 
     #[test]
-    fn a_notification_body_omits_the_project_line_without_a_real_working_directory() {
+    fn a_notification_body_names_cowork_instead_of_its_scratch_directory() {
         let sandbox = "C:\\Users\\demo\\AppData\\Local\\Claude-3p\\local-agent-mode-sessions\\aaaa\\0000\\bbbb\\outputs";
 
         let without = super::completion_email_body("Claude Code", "问题", "回复", None, None, None);
         let sandboxed = super::completion_email_body("Claude Code", "问题", "回复", Some(sandbox), None, None);
         let with_project = super::completion_email_body("Claude Code", "问题", "回复", Some("D:\\work\\MyProject"), None, None);
 
-        assert!(!without.contains("项目："));
-        assert!(!sandboxed.contains("项目："), "a sandbox scratch directory is not a project");
-        assert!(!sandboxed.contains("outputs"));
+        assert!(!without.contains("项目："), "nothing to name means no project line at all");
+        assert!(sandboxed.contains("项目：Cowork"));
+        assert!(!sandboxed.contains("outputs"), "the scratch directory name is meaningless to the reader");
         assert!(with_project.contains("项目：MyProject"));
     }
 
