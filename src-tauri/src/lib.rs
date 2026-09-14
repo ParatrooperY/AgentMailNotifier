@@ -109,8 +109,7 @@ struct CodexRolloutCompletion {
 }
 
 struct ClaudeTranscriptCompletion {
-    session_id: String,
-    turn_id: String,
+    completion_id: String,
     chat: Option<String>,
     problem: String,
     detail: String,
@@ -1246,10 +1245,6 @@ fn read_claude_transcript_completion(path: &Path, target_completion_id: &str) ->
     });
     let prompt = prompt_index.and_then(|index| records.get(index));
     let session_id = session_id?;
-    let turn_id = prompt.and_then(|value| value.get("promptId").and_then(serde_json::Value::as_str))
-        .or_else(|| prompt.and_then(|value| value.get("uuid").and_then(serde_json::Value::as_str)))
-        .unwrap_or(target_completion_id)
-        .to_owned();
     let problem = prompt.and_then(|value| value.pointer("/message/content").and_then(value_text))
         .map(|text| limit_notification_text(&sanitize_problem_text(&text), 50))
         .unwrap_or_else(|| "Claude Code 任务完成".to_owned());
@@ -1263,15 +1258,20 @@ fn read_claude_transcript_completion(path: &Path, target_completion_id: &str) ->
         end.signed_duration_since(start).to_std().ok()
     });
     Some(ClaudeTranscriptCompletion {
+        completion_id: target_completion_id.to_owned(),
         chat: custom_title.or(ai_title).or_else(|| desktop_session_title(&session_id)),
-        session_id,
-        turn_id,
         problem,
         detail,
         working_directory: prompt.and_then(|value| value.get("cwd").and_then(serde_json::Value::as_str).map(str::to_owned))
             .or_else(|| target.get("cwd").and_then(serde_json::Value::as_str).map(str::to_owned)),
         elapsed,
     })
+}
+
+// The record uuid survives a chat being forked into a new session file, so it
+// identifies a completion where the session id no longer does.
+fn claude_delivery_key(completion: &ClaudeTranscriptCompletion) -> String {
+    completion.completion_id.clone()
 }
 
 fn deliver_claude_transcript_completion(state: &AppState, completion: ClaudeTranscriptCompletion) {
@@ -1382,7 +1382,7 @@ fn start_claude_transcript_listener(state: Arc<AppState>) -> Result<(), String> 
                 let completion_ids = appended_claude_task_completions(&path, cursor);
                 for completion_id in select_claude_completion_ids(completion_ids, new_file) {
                     let Some(completion) = read_claude_transcript_completion(&path, &completion_id) else { continue; };
-                    let key = format!("{}:{}", completion.session_id, completion.turn_id);
+                    let key = claude_delivery_key(&completion);
                     if delivered.insert(key) {
                         deliver_claude_transcript_completion(&state, completion);
                     }
@@ -1895,6 +1895,39 @@ mod tests {
         assert_eq!(super::desktop_session_title_in(&root, "session-2"), Some("另一个会话".to_owned()));
         assert_eq!(super::desktop_session_title_in(&root, "session-3"), None);
         fs::remove_dir_all(root).expect("temporary tree should be removed");
+    }
+
+    #[test]
+    fn a_completion_copied_into_a_new_session_file_is_delivered_once() {
+        // The desktop client forks a chat by copying the whole transcript into a
+        // new file under a fresh sessionId, keeping every record uuid. Keying
+        // delivery on the session would treat the copy as a second completion.
+        let first = std::env::temp_dir().join(format!("agent-mail-notifier-fork-a-{}.jsonl", uuid::Uuid::new_v4()));
+        let second = std::env::temp_dir().join(format!("agent-mail-notifier-fork-b-{}.jsonl", uuid::Uuid::new_v4()));
+        let records = |session: &str| {
+            [
+                serde_json::json!({"type":"user","promptId":"prompt-1","uuid":"user-1","isSidechain":false,"origin":{"kind":"human"},"promptSource":"sdk","message":{"role":"user","content":"同一个问题"},"sessionId":session}),
+                serde_json::json!({"type":"assistant","uuid":"assistant-1","parentUuid":"user-1","isSidechain":false,"message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"同一个回复"}]},"sessionId":session}),
+            ].into_iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n") + "\n"
+        };
+        fs::write(&first, records("session-old")).expect("transcript should be written");
+        fs::write(&second, records("session-forked")).expect("forked transcript should be written");
+
+        let from_first = read_claude_transcript_completion(&first, "assistant-1").expect("original should parse");
+        let from_second = read_claude_transcript_completion(&second, "assistant-1").expect("fork should parse");
+
+        assert!(
+            fs::read_to_string(&first).unwrap().contains("session-old")
+                && fs::read_to_string(&second).unwrap().contains("session-forked"),
+            "the two files must carry different session ids for this to prove anything",
+        );
+        assert_eq!(
+            super::claude_delivery_key(&from_first),
+            super::claude_delivery_key(&from_second),
+            "the same completion must produce one delivery key across both files",
+        );
+        fs::remove_file(first).expect("transcript should be removed");
+        fs::remove_file(second).expect("forked transcript should be removed");
     }
 
     #[test]
