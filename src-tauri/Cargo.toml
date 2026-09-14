@@ -1,6 +1,6 @@
 [package]
 name = "agent-mail-notifier"
-version = "0.1.0"
+version = "0.1.1"
 description = "Desktop email notifications for Codex and Claude Code"
 authors = ["Agent Mail Notifier contributors"]
 edition = "2024"
