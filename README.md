@@ -72,37 +72,31 @@ Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮
 
 ## 技术栈
 
-界面是网页技术写的，跑在系统自带的 WebView2 里；读文件、发邮件、管托盘这些活由 Rust 做。Tauri 负责把两半拼成一个 exe。
-
-| 位置 | 技术 | 作用 |
-| --- | --- | --- |
-| 界面 | React 18 + TypeScript 5.6 | 画界面 |
-| 界面 | Vite 6 | 开发时实时编译，打包时输出静态文件 |
-| 界面 | lucide-react | 图标 |
-| 界面测试 | Vitest + Testing Library + jsdom | 假浏览器环境跑界面测试 |
-| 后端 | Rust 2024 edition | 监听会话记录、发信、托盘 |
-| 后端 | lettre | SMTP 发信 |
-| 后端 | keyring | 授权码存入 Windows 凭据管理器 |
-| 后端 | serde / serde_json | 读写 JSON 配置 |
-| 后端 | chrono / uuid | 时间、记录编号 |
-| 粘合 | Tauri 2 | 窗口、界面与 Rust 通信、托盘、打包 |
-| 打包 | NSIS | Windows 安装程序 |
-
-Rust 代码分两个目录：`src-tauri/src/` 是主程序，`src-tauri/crates/notifier-core/` 只放不碰系统的纯判断逻辑（事件该不该发信、邮箱对应哪个服务器），分出来是为了好测。
+| 位置   | 技术 | 作用                   |
+|------| --- |----------------------|
+| 前端   | React 18 + TypeScript 5.6 | 构建界面                 |
+| 前端   | Vite 6 | 开发时实时编译，打包时输出静态文件    |
+| 前端   | lucide-react | 图标                   |
+| 前端测试 | Vitest + Testing Library + jsdom | 假浏览器环境跑界面测试          |
+| 后端   | Rust 2024 edition | 监听会话记录、发信、托盘         |
+| 后端   | lettre | SMTP 发送信息            |
+| 后端   | keyring | 授权码存入 Windows 凭据管理器  |
+| 后端   | serde / serde_json | 读写 JSON 配置           |
+| 后端   | chrono / uuid | 时间、记录编号              |
+| 粘合   | Tauri 2 | 窗口、界面与 Rust 通信、托盘、打包 |
+| 打包   | NSIS | Windows 安装程序         |
 
 安装：
 
-- **Node.js** —— 界面那半
-- **Rust 工具链** —— 后端那半
-- **Visual Studio Desktop C++ 构建工具** —— Rust 在 Windows 上要借微软的链接器，勾「使用 C++ 的桌面开发」即可，不用装完整 Visual Studio
+- **Node.js**
+- **Rust 工具链**
+- **Visual Studio Desktop C++ 构建工具** 
 
-### 依赖构建
+### 构建
 
 ```bash
 npm install
 ```
-
-这条只装界面那半的依赖，下载到 `node_modules/`。Rust 那半不用手动装，首次构建时 Cargo 自行下载，编译产物堆在 `src-tauri/target/`。两个目录都不入库。
 
 ### 开发
 
@@ -110,19 +104,15 @@ npm install
 npm run tauri dev
 ```
 
-启动前端开发服务器（Vite），通过 `http://localhost:1420` 访问，编译 Rust 打开桌面窗口。
-
-改 `src/` 界面代码窗口即时刷新；改 `src-tauri/` 需重新编译并重开窗口。首次编译要下载并编译数百个 Rust 依赖，十几分钟正常，之后走缓存。
-
 ### 测试
 
-界面部分：
+前端部分：
 
 ```bash
 npm test
 ```
 
-Rust 部分，`--manifest-path` 指出配置文件位置，免得先 `cd` 进子目录：
+Rust 部分：
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -133,14 +123,6 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```bash
 npm run tauri build
 ```
-
-执行流程：
-
-- `tsc --noEmit` 检查类型有没有写错；
-- Vite 把界面编译成静态文件放进 `dist/`；
-- release 模式编译 Rust；
-- 界面文件和 Rust 程序打包进 exe；
-- 套一层 NSIS 安装程序；
 
 产物位置：
 
