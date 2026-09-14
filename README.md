@@ -70,43 +70,51 @@ Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮
 - **程序没运行时的事件会丢失**，不做离线监听队列，避免重启后收到一堆过期通知。
 - **移动安装路径后**，便携版需要重新启用一次通道。
 
-## 开发
+## 技术栈
 
-### 这个应用由两半组成
+界面是网页技术写的，跑在系统自带的 WebView2 里；读文件、发邮件、管托盘这些活由 Rust 做。Tauri 负责把两半拼成一个 exe。
 
-界面那一半是网页技术写的（React），跑在一个内嵌的浏览器窗口里。干活那一半是 Rust 写的，负责读会话记录、发邮件、管托盘图标。中间的框架叫 Tauri，它把这两半拼成一个 exe。
+| 位置 | 技术 | 作用 |
+| --- | --- | --- |
+| 界面 | React 18 + TypeScript 5.6 | 画界面 |
+| 界面 | Vite 6 | 开发时实时编译，打包时输出静态文件 |
+| 界面 | lucide-react | 图标 |
+| 界面测试 | Vitest + Testing Library + jsdom | 假浏览器环境跑界面测试 |
+| 后端 | Rust 2024 edition | 监听会话记录、发信、托盘 |
+| 后端 | lettre | SMTP 发信 |
+| 后端 | keyring | 授权码存入 Windows 凭据管理器 |
+| 后端 | serde / serde_json | 读写 JSON 配置 |
+| 后端 | chrono / uuid | 时间、记录编号 |
+| 粘合 | Tauri 2 | 窗口、界面与 Rust 通信、托盘、打包 |
+| 打包 | NSIS | Windows 安装程序 |
 
-所以要装两套工具链：**Node.js** 管界面那半，**Rust** 管干活那半。
+Rust 代码分两个目录：`src-tauri/src/` 是主程序，`src-tauri/crates/notifier-core/` 只放不碰系统的纯判断逻辑（事件该不该发信、邮箱对应哪个服务器），分出来是为了好测。
 
-Windows 上还要装 **Visual Studio Desktop C++ 构建工具**。Rust 自己不带链接器（把编译好的碎片拼成 exe 的那个程序），在 Windows 上要借微软的。装 Visual Studio Installer 时勾「使用 C++ 的桌面开发」就行，不用装完整的 Visual Studio。
+安装：
 
-### 装依赖
+- **Node.js** —— 界面那半
+- **Rust 工具链** —— 后端那半
+- **Visual Studio Desktop C++ 构建工具** —— Rust 在 Windows 上要借微软的链接器，勾「使用 C++ 的桌面开发」即可，不用装完整 Visual Studio
+
+### 依赖构建
 
 ```bash
 npm install
 ```
 
-这条只装界面那半的依赖，下载到 `node_modules/`。Rust 那半不用手动装 —— 第一次构建时 Cargo（Rust 的包管理器）会自己去下载，编译产物堆在 `src-tauri/target/`。这两个目录都很大，已经写进 `.gitignore` 不入库。
+这条只装界面那半的依赖，下载到 `node_modules/`。Rust 那半不用手动装，首次构建时 Cargo 自行下载，编译产物堆在 `src-tauri/target/`。两个目录都不入库。
 
-### 开发模式
+### 开发
 
 ```bash
 npm run tauri dev
 ```
 
-这一条命令背后做了三件事，顺序是固定的：
+启动前端开发服务器（Vite），通过 `http://localhost:1420` 访问，编译 Rust 打开桌面窗口。
 
-先按 `src-tauri/tauri.conf.json` 里的 `beforeDevCommand` 启动前端开发服务器（Vite），它把界面挂在 `http://localhost:1420`。
+改 `src/` 界面代码窗口即时刷新；改 `src-tauri/` 需重新编译并重开窗口。首次编译要下载并编译数百个 Rust 依赖，十几分钟正常，之后走缓存。
 
-然后编译 Rust 那半，开一个桌面窗口，窗口内容指向刚才那个地址。
-
-最后保持监听。改 `src/` 里的界面代码，窗口里立刻刷新，不用重启（专业叫法：热更新）。改 `src-tauri/` 里的 Rust 代码，它会重新编译再重开窗口，慢一些。
-
-**第一次跑会很慢**，Rust 要从零编译几百个依赖包，十几分钟正常。之后有缓存，几秒到几十秒。
-
-### 跑测试
-
-两半各有各的测试，命令也是分开的。
+### 测试
 
 界面部分：
 
@@ -114,44 +122,38 @@ npm run tauri dev
 npm test
 ```
 
-Rust 部分：
+Rust 部分，`--manifest-path` 指出配置文件位置，免得先 `cd` 进子目录：
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-`--manifest-path` 是告诉 Cargo「配置文件在这儿」。因为 Rust 代码在 `src-tauri/` 子目录里，不加这个参数就得先 `cd` 进去。
-
-### 打包成安装包
+### 构建安装包
 
 ```bash
 npm run tauri build
 ```
 
-这条比开发模式多了几步：
+执行流程：
 
-先跑 `tsc --noEmit` 检查类型有没有写错（`--noEmit` 意思是只检查、不产出文件），有错就停下，不会打出一个坏包。
+- `tsc --noEmit` 检查类型有没有写错；
+- Vite 把界面编译成静态文件放进 `dist/`；
+- release 模式编译 Rust；
+- 界面文件和 Rust 程序打包进 exe；
+- 套一层 NSIS 安装程序；
 
-再用 Vite 把界面编译成静态文件放进 `dist/`。
-
-然后用 release 模式编译 Rust。跟开发模式的区别是开了优化，编译慢但跑起来快、体积小。
-
-最后把界面文件和 Rust 程序打进一个 exe，再套一层 NSIS 安装程序。
-
-产物在这两个位置：
+产物位置：
 
 `src-tauri/target/release/bundle/nsis/` —— 安装包
 
-`src-tauri/target/release/agent-mail-notifier.exe` —— 免安装版，可以直接改名当便携版用
-
-项目故意没有启用自动更新，发新版要手动把这两个文件传到 GitHub Releases。
+`src-tauri/target/release/agent-mail-notifier.exe` —— 免安装版
 
 ## 项目结构
 
 ```
 src/                                    React 前端
 src-tauri/src/                          Tauri 主进程、状态管理、SMTP 发送
-src-tauri/crates/notifier-core/         事件解析、投递判定、SMTP 预设（纯逻辑，可单测）
+src-tauri/crates/notifier-core/         事件解析、投递判定、SMTP 预设
 docs/                                   应用截图
 ```
 

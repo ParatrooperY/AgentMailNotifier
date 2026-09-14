@@ -70,43 +70,51 @@ Use Custom for any other provider and fill in host, port, and encryption yoursel
 - **Events while the app is stopped are dropped**, with no offline listening queue, so a restart does not dump a backlog of stale mail.
 - **Moving the portable exe** requires re-enabling each channel.
 
-## Development
+## Stack
 
-### The app is two halves
+The interface is web technology running inside the system's own WebView2; reading transcripts, sending mail and owning the tray icon is Rust's job. Tauri fuses both halves into one exe.
 
-The interface half is written with web technology (React) and runs inside an embedded browser window. The working half is Rust: it reads transcripts, sends mail, and owns the tray icon. Tauri is the framework in between, and it fuses both halves into one exe.
+| Where | Technology | Role |
+| --- | --- | --- |
+| Interface | React 18 + TypeScript 5.6 | Draws the UI |
+| Interface | Vite 6 | Live compile in dev, static output on build |
+| Interface | lucide-react | Icons |
+| Interface tests | Vitest + Testing Library + jsdom | UI tests in a fake browser environment |
+| Backend | Rust 2024 edition | Transcript listeners, mail, tray |
+| Backend | lettre | SMTP delivery |
+| Backend | keyring | Authorization codes in Windows Credential Manager |
+| Backend | serde / serde_json | Reads and writes the JSON settings |
+| Backend | chrono / uuid | Timestamps, record ids |
+| Glue | Tauri 2 | Window, interface-to-Rust calls, tray, packaging |
+| Packaging | NSIS | Windows installer |
 
-That means two toolchains: **Node.js** for the interface half, **Rust** for the working half.
+The Rust code sits in two directories: `src-tauri/src/` is the main program, and `src-tauri/crates/notifier-core/` holds only pure decisions that never touch the system (whether an event should be mailed, which server a mailbox maps to). It is split out to keep it easy to test.
 
-On Windows you also need the **Visual Studio Desktop C++ build tools**. Rust does not ship its own linker — the program that stitches compiled fragments into an exe — so on Windows it borrows Microsoft's. In Visual Studio Installer, tick "Desktop development with C++"; a full Visual Studio install is not required.
+Install:
 
-### Install dependencies
+- **Node.js** — the interface half
+- **Rust toolchain** — the backend half
+- **Visual Studio Desktop C++ build tools** — Rust borrows Microsoft's linker on Windows; ticking "Desktop development with C++" is enough, a full Visual Studio install is not
+
+### Dependencies
 
 ```bash
 npm install
 ```
 
-This only installs the interface half, into `node_modules/`. The Rust half needs no manual step: on the first build, Cargo (Rust's package manager) downloads what it needs and piles build output into `src-tauri/target/`. Both directories are large and are kept out of the repository by `.gitignore`.
+This only installs the interface half, into `node_modules/`. The Rust half needs no manual step: Cargo fetches what it needs on the first build and piles output into `src-tauri/target/`. Neither directory is committed.
 
-### Dev mode
+### Development
 
 ```bash
 npm run tauri dev
 ```
 
-One command, three things behind it, always in this order:
+Starts the frontend dev server (Vite), served at `http://localhost:1420`, then compiles Rust and opens the desktop window.
 
-First it runs `beforeDevCommand` from `src-tauri/tauri.conf.json`, which starts the frontend dev server (Vite) and serves the interface at `http://localhost:1420`.
-
-Then it compiles the Rust half and opens a desktop window whose contents point at that address.
-
-Then it keeps watching. Edit interface code under `src/` and the window refreshes immediately with no restart (this is hot reload). Edit Rust code under `src-tauri/` and it recompiles and reopens the window, which is slower.
-
-**The first run is slow.** Rust compiles several hundred dependency crates from scratch, so ten-plus minutes is normal. Later runs hit the cache and take seconds.
+Edits under `src/` refresh the window instantly; edits under `src-tauri/` need a recompile and a new window. The first compile downloads and builds several hundred Rust dependencies, so ten-plus minutes is normal; later runs hit the cache.
 
 ### Tests
-
-Each half has its own tests and its own command.
 
 Interface:
 
@@ -114,37 +122,31 @@ Interface:
 npm test
 ```
 
-Rust:
+Rust, where `--manifest-path` points at the config file so you need not `cd` into the subdirectory first:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-`--manifest-path` tells Cargo where the config file lives. The Rust code sits in the `src-tauri/` subdirectory, so without that flag you would have to `cd` there first.
-
-### Package an installer
+### Building an installer
 
 ```bash
 npm run tauri build
 ```
 
-This adds a few steps on top of dev mode:
+Pipeline:
 
-It runs `tsc --noEmit` first to check for type errors (`--noEmit` means check only, write nothing). An error stops the build rather than shipping a broken package.
+- `tsc --noEmit` checks for type errors;
+- Vite compiles the interface into static files under `dist/`;
+- Rust is compiled in release mode;
+- interface files and the Rust program are packed into one exe;
+- an NSIS installer is wrapped around it;
 
-Then Vite compiles the interface into static files under `dist/`.
+Artifacts:
 
-Then Rust is compiled in release mode. Unlike dev mode this enables optimisation: slower to compile, faster and smaller to run.
+`src-tauri/target/release/bundle/nsis/` — installer
 
-Finally the interface files and the Rust program are packed into one exe, wrapped in an NSIS installer.
-
-Artifacts land in two places:
-
-`src-tauri/target/release/bundle/nsis/` — the installer
-
-`src-tauri/target/release/agent-mail-notifier.exe` — the standalone exe, which can be renamed and shipped as the portable build
-
-Auto-update is intentionally off, so publishing a new version means uploading both files to GitHub Releases by hand.
+`src-tauri/target/release/agent-mail-notifier.exe` — standalone build
 
 ## Layout
 
