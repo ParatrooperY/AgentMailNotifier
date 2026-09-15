@@ -57,11 +57,9 @@ struct IntegrationView {
     kind: String,
     display_name: String,
     smtp: StoredSmtp,
-    installed: bool,
     enabled_preference: bool,
     available: bool,
     detail: String,
-    tone: String,
     history: Vec<HistoryEntry>,
 }
 
@@ -163,22 +161,20 @@ impl AppState {
 fn view(kind: IntegrationKind, state: &StoredState) -> IntegrationView {
     let current = channel(state, kind);
     let ready = current.smtp.verified;
-    let (detail, tone) = if !current.smtp.verified {
-        ("请先完成 SMTP 测试".to_owned(), "muted".to_owned())
+    let detail = if !current.smtp.verified {
+        "请先完成 SMTP 测试".to_owned()
     } else if current.integration.enabled_preference {
-        ("程序运行时会发送完成邮件".to_owned(), "ready".to_owned())
+        "程序运行时会发送完成邮件".to_owned()
     } else {
-        ("邮件通知已关闭".to_owned(), "muted".to_owned())
+        "邮件通知已关闭".to_owned()
     };
     IntegrationView {
         kind: channel_name(kind).to_owned(),
         display_name: source_name(kind).to_owned(),
         smtp: current.smtp.clone(),
-        installed: true,
         enabled_preference: current.integration.enabled_preference,
         available: ready,
         detail,
-        tone,
         history: current.history.iter().cloned().collect(),
     }
 }
@@ -193,7 +189,6 @@ fn get_dashboard(state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
     Ok(dashboard(&stored))
 }
 
-#[tauri::command]
 fn credential_service(kind: IntegrationKind) -> String {
     credential_service_name(kind)
 }
@@ -435,19 +430,6 @@ fn value_text(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::Object(object) => object.get("text").and_then(value_text).or_else(|| object.get("content").and_then(value_text)),
         _ => None,
     }
-}
-
-#[cfg(test)]
-fn read_claude_session_title(path: &str) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    text.lines().filter_map(|line| {
-        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
-        if value.get("type").and_then(serde_json::Value::as_str) != Some("custom-title") {
-            return None;
-        }
-        value.get("customTitle").and_then(value_text)
-            .or_else(|| value.get("custom_title").and_then(value_text))
-    }).last()
 }
 
 fn notification_preview(text: &str) -> String {
@@ -1218,17 +1200,6 @@ fn clear_history(kind: IntegrationKind, state: State<'_, Arc<AppState>>) -> Resu
     Ok(dashboard(&stored))
 }
 
-#[tauri::command]
-fn open_log_folder(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let folder = state.path.parent().ok_or("无效的日志目录")?;
-    fs::create_dir_all(folder).map_err(|error| error.to_string())?;
-    std::process::Command::new("explorer").arg(folder).spawn().map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn exit_application(app: AppHandle) { app.exit(0); }
-
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -1296,7 +1267,6 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_opener::init())
         .manage(state.clone())
         .setup(move |app| {
             start_codex_rollout_listener(setup_state.clone())
@@ -1315,7 +1285,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_dashboard, save_and_test_smtp, set_integration_enabled, clear_history, open_log_folder, exit_application])
+        .invoke_handler(tauri::generate_handler![get_dashboard, save_and_test_smtp, set_integration_enabled, clear_history])
         .build(tauri::generate_context!())
         .expect("运行 Agent Mail Notifier 时发生错误");
     app.run(move |_app, event| {
@@ -1495,22 +1465,6 @@ mod tests {
             select_claude_completion_ids(ids, true),
             vec!["current".to_owned()]
         );
-    }
-
-    #[test]
-    fn claude_chat_prefers_the_custom_session_title() {
-        let path = std::env::temp_dir().join(format!("agent-mail-notifier-title-{}.jsonl", uuid::Uuid::new_v4()));
-        fs::write(
-            &path,
-            "{\"type\":\"custom-title\",\"customTitle\":\"旧标题\"}\n{\"type\":\"custom-title\",\"customTitle\":\"重命名了\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"第一条问题\"}}\n",
-        )
-        .expect("transcript should be written");
-
-        assert_eq!(
-            super::read_claude_session_title(path.to_str().unwrap()),
-            Some("重命名了".to_owned())
-        );
-        fs::remove_file(path).expect("transcript should be removed");
     }
 
     #[test]

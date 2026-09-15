@@ -1,6 +1,5 @@
 export type ProviderKind = "qq" | "163" | "outlook" | "gmail" | "custom";
 export type IntegrationKind = "codex" | "claude";
-export type HealthTone = "ready" | "warning" | "error" | "muted";
 
 export interface SmtpStatus {
   email: string;
@@ -17,11 +16,9 @@ export interface SmtpStatus {
 export interface IntegrationStatus {
   kind: IntegrationKind;
   displayName: string;
-  installed: boolean;
   enabledPreference: boolean;
   available: boolean;
   detail: string;
-  tone: HealthTone;
   smtp: SmtpStatus;
   history: HistoryEntry[];
 }
@@ -57,6 +54,4 @@ export interface NotifierBridge {
     enabled: boolean,
   ): Promise<DashboardState>;
   clearHistory(kind: IntegrationKind): Promise<DashboardState>;
-  openLogFolder(): Promise<void>;
-  exitApplication(): Promise<void>;
 }

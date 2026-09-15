@@ -24,7 +24,6 @@ pub struct StoredSmtp {
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct StoredIntegration {
-    pub installed: bool,
     pub enabled_preference: bool,
     pub codex_previous_notify: Option<Vec<String>>,
     pub codex_timing_hook_created: bool,
@@ -203,7 +202,6 @@ pub fn source_name(kind: IntegrationKind) -> &'static str {
 
 pub fn mark_disconnected_for_uninstall(state: &mut StoredState) {
     for channel in [&mut state.codex, &mut state.claude] {
-        channel.integration.installed = false;
         channel.integration.enabled_preference = false;
     }
 }
@@ -251,8 +249,8 @@ mod tests {
             "version": 2,
             "codex_smtp": {"email":"codex-user","provider_label":"Codex","verified":true},
             "claude_smtp": {"email":"claude-user","provider_label":"Claude","verified":false},
-            "codex": {"installed":true,"enabled_preference":true},
-            "claude": {"installed":false,"enabled_preference":false},
+            "codex": {"enabled_preference":true},
+            "claude": {"enabled_preference":false},
             "codex_history": [],
             "claude_history": []
         });
@@ -262,8 +260,8 @@ mod tests {
         assert!(!migrated);
         assert_eq!(state.codex.smtp.email, "codex-user");
         assert_eq!(state.claude.smtp.email, "claude-user");
-        assert!(state.codex.integration.installed);
-        assert!(!state.claude.integration.installed);
+        assert!(state.codex.integration.enabled_preference);
+        assert!(!state.claude.integration.enabled_preference);
     }
 
     #[test]
@@ -275,8 +273,8 @@ mod tests {
             "version": 2,
             "codex_smtp": {"email":"codex-user","provider":"qq","providerLabel":"QQ 邮箱 · SSL 465","host":"smtp.qq.com","port":465,"encryption":"ssl","verified":true,"lastTestedAt":"2026-08-22 16:26","error":null},
             "claude_smtp": {"email":"claude-user","provider":"163","providerLabel":"网易邮箱 · SSL 465","host":"smtp.163.com","port":465,"encryption":"ssl","verified":true,"lastTestedAt":"2026-08-22 23:54","error":null},
-            "codex": {"installed":false,"enabled_preference":true,"codex_previous_notify":null,"codex_timing_hook_created":false,"codex_delivered_events":["event-1"]},
-            "claude": {"installed":false,"enabled_preference":true,"codex_previous_notify":null,"codex_timing_hook_created":false,"codex_delivered_events":[]},
+            "codex": {"enabled_preference":true,"codex_previous_notify":null,"codex_timing_hook_created":false,"codex_delivered_events":["event-1"]},
+            "claude": {"enabled_preference":true,"codex_previous_notify":null,"codex_timing_hook_created":false,"codex_delivered_events":[]},
             "codex_history": [{"id":"entry-1","source":"Codex","title":"任务","result":"sent","detail":"","occurredAt":"2026-08-22 16:26"}],
             "claude_history": [{"id":"entry-2","source":"Claude Code","title":"任务","result":"sent","detail":"","occurredAt":"2026-08-22 23:54"}]
         });
@@ -326,13 +324,11 @@ mod tests {
     fn retaining_data_on_uninstall_disconnects_channels_without_clearing_data() {
         let mut state = StoredState::current();
         state.codex.smtp.email = "codex-user".to_owned();
-        state.codex.integration.installed = true;
         state.codex.integration.enabled_preference = true;
         state.codex.history.push_back(HistoryEntry { id: "entry".to_owned(), title: "task".to_owned(), ..HistoryEntry::default() });
 
         mark_disconnected_for_uninstall(&mut state);
 
-        assert!(!state.codex.integration.installed);
         assert!(!state.codex.integration.enabled_preference);
         assert_eq!(state.codex.smtp.email, "codex-user");
         assert_eq!(state.codex.history.len(), 1);

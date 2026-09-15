@@ -12,8 +12,8 @@ function smtp(email = "") {
 
 const initialState: DashboardState = {
   integrations: [
-    { kind: "codex", displayName: "Codex", installed: false, enabledPreference: true, available: false, detail: "请先完成 SMTP 测试", tone: "muted", smtp: smtp(), history: [] },
-    { kind: "claude", displayName: "Claude Code", installed: false, enabledPreference: false, available: false, detail: "请先完成 SMTP 测试", tone: "muted", smtp: smtp(), history: [] },
+    { kind: "codex", displayName: "Codex", enabledPreference: true, available: false, detail: "请先完成 SMTP 测试", smtp: smtp(), history: [] },
+    { kind: "claude", displayName: "Claude Code", enabledPreference: false, available: false, detail: "请先完成 SMTP 测试", smtp: smtp(), history: [] },
   ],
 };
 
@@ -23,8 +23,6 @@ function bridgeReturning(state: DashboardState, overrides: Partial<NotifierBridg
     saveAndTestSmtp: async () => state,
     setIntegrationEnabled: async () => state,
     clearHistory: async () => state,
-    openLogFolder: async () => undefined,
-    exitApplication: async () => undefined,
     ...overrides,
   };
 }
@@ -174,7 +172,7 @@ test("refreshes dashboard when the tray changes a notification preference", asyn
   await screen.findByRole("heading", { name: "Agent 邮件通知" });
   latest = {
     integrations: [
-      { ...initialState.integrations[0], installed: true, available: true, enabledPreference: false, smtp: { ...smtp("account"), verified: true } },
+      { ...initialState.integrations[0], available: true, enabledPreference: false, smtp: { ...smtp("account"), verified: true } },
       initialState.integrations[1],
     ],
   };

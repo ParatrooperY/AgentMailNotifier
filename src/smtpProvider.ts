@@ -20,9 +20,3 @@ export function smtpProviderFor(email: string): ProviderPreset | null {
   if (!domain) return null;
   return PRESETS.find(({ domains }) => domains.includes(domain))?.preset ?? null;
 }
-
-export function needsCustomSmtp(email: string): boolean {
-  const normalized = email.trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) return false;
-  return !smtpProviderFor(normalized);
-}

@@ -15,6 +15,4 @@ export const tauriBridge: NotifierBridge = {
   setIntegrationEnabled: (kind: IntegrationKind, enabled: boolean) =>
     invoke("set_integration_enabled", { kind, enabled }),
   clearHistory: (kind: IntegrationKind) => invoke("clear_history", { kind }),
-  openLogFolder: () => invoke("open_log_folder"),
-  exitApplication: () => invoke("exit_application"),
 };
