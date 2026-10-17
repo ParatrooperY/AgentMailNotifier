@@ -907,7 +907,7 @@ fn start_codex_rollout_listener(state: Arc<AppState>) -> Result<(), String> {
                 if !cursors.contains_key(&path) {
                     if let Some(mut cursor) = rollout_cursor_at_end(&path) {
                         cursor.offset = 0;
-                        cursors.insert(path, cursor);
+                        cursors.insert(path.clone(), cursor);
                     }
                 }
                 let Some(cursor) = cursors.get_mut(&path) else { continue; };
