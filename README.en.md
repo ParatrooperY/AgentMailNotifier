@@ -1,6 +1,6 @@
 <h1 align="center">Agent Mail Notifier</h1>
 
-<p align="center"><b>Email notifications for finished Codex Desktop / Claude Code Desktop tasks</b> (Tauri 2 + Rust + React)</p>
+<p align="center"><b>Task completion emails for Codex Desktop / Claude Code Desktop, with Codex question alerts</b> (Tauri 2 + Rust + React)</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
@@ -12,17 +12,18 @@
 
 ## What this is
 
-Sends you an email when a Codex Desktop or Claude Code Desktop task finishes. Leave long jobs running unattended — when a turn ends, or fails and needs you, a mail arrives.
+Sends you an email when a Codex Desktop or Claude Code Desktop task finishes. When Codex asks an interactive question and waits for your answer, it also sends an alert without waiting for the entire task to finish. Leave long jobs running without watching the app constantly.
 
-The app only reads the two clients' session transcripts to decide whether a task finished; it never writes to their configuration. SMTP authorization codes are handed to Windows Credential Manager instead of being stored in the settings file.
+The app only reads the two clients' session transcripts to detect task completions and Codex questions; it never writes to their configuration. SMTP authorization codes are handed to Windows Credential Manager instead of being stored in the settings file.
 
 ## Features
 
 - **Isolated channels**: separate sender mailboxes for Codex Desktop and Claude Code Desktop; separate activity history; the tray menu toggles either one on its own.
+- **Codex question alerts**: receive an email as soon as an interactive question appears, including the question, choices and their descriptions. Project and chat names are included when available, so you can return to the right conversation.
 - **Credential safety**: SMTP authorization codes go into Windows Credential Manager; the settings file keeps only host, port, encryption and other non-secret fields; the input is cleared after a successful test.
 - **Provider presets**: QQ / Foxmail, NetEase 163 / 126 / yeah.net, Outlook / Hotmail / Live and Gmail fill in host and port automatically; anything else takes a manual host, port and SSL or STARTTLS.
-- **Read-only listeners**: transcripts decide when a turn ended, so Codex's `config.toml` and Claude Code's `settings.json` are never modified; no inbound port is opened.
-- **Event filtering**: subagent events and internal receipts are dropped; one finished turn produces exactly one mail, never a duplicate for the same completion.
+- **Read-only listeners**: transcripts identify task completions and Codex questions, so Codex's `config.toml` and Claude Code's `settings.json` are never modified; no inbound port is opened.
+- **Event filtering and deduplication**: subagent events and internal receipts are filtered out. Each task completion and each Codex question is deduplicated separately, with delivery records saved locally to prevent repeated log entries from producing duplicate notifications.
 - **Runs in the background**: closing the window leaves it in the system tray; the tray menu check marks show each channel's current state, and quitting stops listening entirely.
 
 ## Screenshots
@@ -52,6 +53,8 @@ The authorization code is not the mailbox login password. Enable SMTP in the pro
 
 **2. Enable notifications.** Turn on Codex and Claude Code independently.
 
+With the Codex channel enabled, both interactive questions and task completions produce notifications. The same question is only announced once; after you answer and the task finishes, a separate completion email can still be sent. Early questions and completion events in sessions created while the notifier is running are also read.
+
 ### SMTP presets
 
 | Provider | Host | Port | Encryption |
@@ -66,6 +69,7 @@ Use Custom for any other provider and fill in host, port and encryption.
 ## Known limitations
 
 - **Windows x64 only**, since it relies on Windows Credential Manager and local transcript paths.
+- **Question alerts currently support Codex interactive questions only.** Questions written as ordinary reply text do not trigger a question email.
 - **Replies cut off by the token limit are not mailed**, because a turn counts as finished on `end_turn` or `stop_sequence`, and a `max_tokens` truncation is skipped.
 - **Events while the app is stopped are lost**, with no offline listening queue, so a restart does not dump a backlog of stale mail.
 - **After moving the install path**, the portable build needs each channel re-enabled once.

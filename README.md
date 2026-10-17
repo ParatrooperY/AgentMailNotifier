@@ -1,6 +1,6 @@
 <h1 align="center">Agent Mail Notifier</h1>
 
-<p align="center"><b>Codex Desktop / Claude Code Desktop 任务完成邮件通知</b>（Tauri 2 + Rust + React）</p>
+<p align="center"><b>Codex Desktop / Claude Code Desktop 任务完成邮件通知，支持 Codex 提问提醒</b>（Tauri 2 + Rust + React）</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
@@ -12,17 +12,18 @@
 
 ## 这是什么
 
-Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮件。挂机跑长任务时不用一直守着终端，任务结束、或者中途失败需要你介入，邮件会告诉你。
+Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮件。Codex 中途提出交互问题、等待你回答时，也会发邮件提醒，无需等到整轮任务结束。挂机跑长任务时不用一直守着终端。
 
-程序只读取两个客户端的会话记录来判断任务是否完成，不往它们的配置里写任何东西；SMTP 授权码交给 Windows 凭据管理器保管，不落盘到配置文件。
+程序只读取两个客户端的会话记录来识别任务完成和 Codex 提问，不往它们的配置里写任何东西；SMTP 授权码交给 Windows 凭据管理器保管，不落盘到配置文件。
 
 ## 功能
 
 - **通道隔离**：Codex Desktop 与 Claude Code Desktop 分别配置发件邮箱；通知记录分开保存；托盘菜单可单独开关任一通道。
+- **Codex 提问提醒**：出现交互提问后即可发邮件，包含问题、选项和选项说明；项目名和聊天名可用时也会显示，方便回到对应会话回答。
 - **凭据安全**：SMTP 授权码存入 Windows 凭据管理器；配置文件只留主机、端口、加密方式等非敏感项；测试成功后输入框自动清空。
 - **邮箱预设**：QQ / Foxmail、网易 163 / 126 / yeah.net、Outlook / Hotmail / Live、Gmail 自动补全主机与端口；其它邮箱手填主机、端口、SSL 或 STARTTLS。
-- **只读监听**：读取会话记录判断一轮结束，不修改 Codex 的 `config.toml` 或 Claude Code 的 `settings.json`；不建立对外监听端口。
-- **事件过滤**：子代理中间事件、程序内部回执一律丢弃；一轮任务只发一封，不会因为同一次完成重复投递。
+- **只读监听**：读取会话记录识别任务完成和 Codex 提问，不修改 Codex 的 `config.toml` 或 Claude Code 的 `settings.json`；不建立对外监听端口。
+- **事件过滤与去重**：过滤子代理中间事件和程序内部回执；同一任务完成事件、同一个 Codex 问题分别去重，已发送记录会保存到本地，避免日志重复导致重复通知。
 - **后台常驻**：关闭窗口后留在系统托盘；托盘菜单用勾选标出两个通道当前的开关状态，退出即彻底停止监听。
 
 ## 截图
@@ -52,6 +53,8 @@ Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮
 
 **第二步，启用通知。** 分别打开 Codex 和 Claude Code 的开关。
 
+启用 Codex 通道后，交互提问和任务完成都会发送通知。同一个问题只提醒一次；回答后任务完成时，仍会单独发送完成邮件。程序保持运行时，新建会话中的早期提问和完成事件也会被读取。
+
 ### 支持的邮箱预设
 
 | 邮箱 | SMTP 主机 | 端口 | 加密 |
@@ -66,6 +69,7 @@ Codex Desktop 和 Claude Code Desktop 跑完一轮任务后，给你发一封邮
 ## 已知限制
 
 - **只支持 Windows x64**，依赖 Windows 凭据管理器和本机会话记录路径。
+- **提问提醒目前只支持 Codex 的交互提问**，普通文字回复中的问句不会触发提问邮件。
 - **被长度上限截断的回复不发通知**，判定「一轮结束」依赖会话记录里的收尾标记，正常收尾和被停止串收尾都算完成，但撞到 token 上限的半截回复会跳过。
 - **程序没运行时的事件会丢失**，不做离线监听队列，避免重启后收到一堆过期通知。
 - **移动安装路径后**，便携版需要重新启用一次通道。

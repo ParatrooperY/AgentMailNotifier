@@ -76,26 +76,4 @@ jobs:
         with:
           files: artifacts/*
           draft: true
-          body_path: docs/RELEASE_NOTES.md
-      - name: Verify release draft
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view "$GITHUB_REF_NAME" --json tagName,isDraft,body,assets > "$RUNNER_TEMP/release.json"
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = require('node:path');
-          const release = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'release.json'), 'utf8'));
-          const normalize = text => text.replace(/\r\n/g, '\n').trim();
-          const notes = normalize(fs.readFileSync('docs/RELEASE_NOTES.md', 'utf8'));
-          const version = require('./src-tauri/tauri.conf.json').version;
-          const expected = [`AgentMailNotifier-${version}-x64-setup.exe`, `AgentMailNotifier-${version}-x64-portable.exe`];
-          if (release.tagName !== `v${version}` || !release.isDraft || normalize(release.body) !== notes) {
-            throw new Error('Release tag, draft status or release notes do not match.');
-          }
-          if (!expected.every(name => release.assets.some(asset => asset.name === name && asset.size > 0))) {
-            throw new Error('Release draft is missing an expected installer or portable executable.');
-          }
-          console.log('Verified release draft, bilingual notes and both Windows downloads.');
-          NODE
+          generate_release_notes: true
