@@ -82,13 +82,20 @@ struct RolloutCursor {
     created_at: Option<std::time::SystemTime>,
 }
 
-struct CodexRolloutCompletion {
+#[derive(Debug, PartialEq, Eq)]
+enum CodexRolloutEvent {
+    Completion(String),
+    Question(String),
+}
+
+struct CodexRolloutNotification {
     thread_id: String,
     turn_id: String,
     problem: String,
     detail: String,
     working_directory: Option<String>,
     elapsed: Option<Duration>,
+    question_id: Option<String>,
 }
 
 struct ClaudeTranscriptCompletion {
@@ -513,6 +520,31 @@ fn send_completion_email(
     elapsed: Option<Duration>,
 ) -> Result<(), String> {
     let title = limit_notification_text(title, 50);
+    let body = completion_email_body(source_name(kind), &title, detail, working_directory, chat, elapsed);
+    send_notification_email(kind, smtp, &title, body)
+}
+
+fn question_email_body(detail: &str, working_directory: Option<&str>, chat: Option<&str>) -> String {
+    let mut body = format!(
+        "Codex 提出了问题，请回到 Codex 查看并回答。\n\n状态：有新提问\n通知时间：{}\n",
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+    );
+    if let Some(project) = notification_project(working_directory) {
+        body.push_str(&format!("项目：{project}\n"));
+    }
+    if let Some(chat) = chat.map(str::trim).filter(|chat| !chat.is_empty()) {
+        body.push_str(&format!("聊天：{chat}\n"));
+    }
+    body.push_str(&format!("\n提问：\n{detail}"));
+    body
+}
+
+fn send_notification_email(
+    kind: IntegrationKind,
+    smtp: &StoredSmtp,
+    title: &str,
+    body: String,
+) -> Result<(), String> {
     let email = &smtp.email;
     let password = saved_password(kind, email)?;
     let host = smtp.host.as_deref().ok_or("缺少 SMTP 服务器")?;
@@ -521,7 +553,6 @@ fn send_completion_email(
     let transport = smtp_transport(email, &password, host, port, encryption)?;
     let source = source_name(kind);
     let mailbox = email.parse::<lettre::message::Mailbox>().map_err(|_| "邮箱格式无效，请检查邮箱地址".to_owned())?;
-    let body = completion_email_body(source, &title, detail, working_directory, chat, elapsed);
     let message = Message::builder().from(mailbox.clone()).to(mailbox).subject(format!("[{source}] {title}")).body(body).map_err(|_| "无法生成通知邮件，请稍后重试".to_owned())?;
     transport.send(&message).map_err(|error| smtp_error(error.to_string()))?;
     Ok(())
@@ -626,7 +657,50 @@ fn rollout_cursor_at_end(path: &Path) -> Option<RolloutCursor> {
     })
 }
 
-fn appended_codex_task_completions(path: &Path, cursor: &mut RolloutCursor) -> Vec<String> {
+fn codex_question(value: &serde_json::Value) -> Option<(String, serde_json::Value)> {
+    let payload = value.get("payload")?;
+    let (id, questions) = match value.get("type").and_then(serde_json::Value::as_str) {
+        Some("event_msg") if payload.get("type").and_then(serde_json::Value::as_str) == Some("item_completed") => {
+            let item = payload.get("item")?;
+            if item.get("type").and_then(serde_json::Value::as_str) != Some("AgentMessage") { return None; }
+            (item.get("id")?.as_str()?, item.get("questions")?.clone())
+        }
+        Some("response_item") if payload.get("type").and_then(serde_json::Value::as_str) == Some("function_call") => {
+            let name = payload.get("name")?.as_str()?.rsplit('.').next()?;
+            if !matches!(name, "request_user_input" | "request_user_input_async") { return None; }
+            let arguments: serde_json::Value = serde_json::from_str(payload.get("arguments")?.as_str()?).ok()?;
+            (payload.get("call_id")?.as_str()?, arguments.get("questions")?.clone())
+        }
+        _ => return None,
+    };
+    if id.trim().is_empty() || questions.as_array()?.is_empty() { return None; }
+    Some((id.to_owned(), questions))
+}
+
+fn codex_question_text(questions: &serde_json::Value) -> Option<(String, String)> {
+    let mut title = None;
+    let mut details = Vec::new();
+    for question in questions.as_array()? {
+        let Some(text) = question.get("question").and_then(value_text)
+            .or_else(|| question.get("title").and_then(value_text)) else { continue; };
+        title.get_or_insert_with(|| limit_notification_text(&text, 50));
+        let mut detail = text;
+        if let Some(options) = question.get("options").and_then(serde_json::Value::as_array) {
+            for option in options {
+                if let Some(label) = value_text(option).or_else(|| option.get("label").and_then(value_text)) {
+                    detail.push_str(&format!("\n- {label}"));
+                    if let Some(description) = option.get("description").and_then(value_text) {
+                        detail.push_str(&format!("：{description}"));
+                    }
+                }
+            }
+        }
+        details.push(detail);
+    }
+    Some((title?, limit_notification_text(&details.join("\n\n"), 4_000)))
+}
+
+fn appended_codex_events(path: &Path, cursor: &mut RolloutCursor) -> Vec<CodexRolloutEvent> {
     let Ok(metadata) = fs::metadata(path) else { return Vec::new(); };
     let replaced = cursor.created_at.zip(metadata.created().ok())
         .is_some_and(|(previous, current)| previous != current);
@@ -654,24 +728,37 @@ fn appended_codex_task_completions(path: &Path, cursor: &mut RolloutCursor) -> V
         .split(|byte| *byte == b'\n')
         .filter_map(|line| {
             let value = serde_json::from_slice::<serde_json::Value>(line).ok()?;
+            if let Some((id, _)) = codex_question(&value) { return Some(CodexRolloutEvent::Question(id)); }
             if value.get("type").and_then(serde_json::Value::as_str) != Some("event_msg") { return None; }
             let payload = value.get("payload")?;
             if payload.get("type").and_then(serde_json::Value::as_str) != Some("task_complete") { return None; }
-            payload.get("turn_id").and_then(serde_json::Value::as_str).map(str::to_owned)
+            payload.get("turn_id").and_then(serde_json::Value::as_str).map(|id| CodexRolloutEvent::Completion(id.to_owned()))
         })
         .collect()
 }
 
-fn read_codex_rollout_completion(path: &Path, target_turn_id: &str) -> Option<CodexRolloutCompletion> {
+fn read_codex_rollout_notification(path: &Path, event: &CodexRolloutEvent) -> Option<CodexRolloutNotification> {
     let text = fs::read_to_string(path).ok()?;
     let mut thread_id = None;
     let mut working_directory = None;
-    let mut active_turn = None;
+    let mut active_turn: Option<String> = None;
     let mut problems = HashMap::<String, String>::new();
     let mut completion = None;
+    let mut question = None;
 
     for line in text.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue; };
+        if let CodexRolloutEvent::Question(target_id) = event
+            && let Some((id, questions)) = codex_question(&value)
+            && id == *target_id
+        {
+            let payload = value.get("payload")?;
+            let turn_id = payload.get("turn_id").and_then(serde_json::Value::as_str)
+                .or_else(|| payload.get("internal_chat_message_metadata_passthrough")?.get("turn_id")?.as_str())
+                .or(active_turn.as_deref())?;
+            let (title, detail) = codex_question_text(&questions)?;
+            question = Some((turn_id.to_owned(), title, detail));
+        }
         match value.get("type").and_then(serde_json::Value::as_str) {
             Some("session_meta") => {
                 let payload = value.get("payload")?;
@@ -696,7 +783,7 @@ fn read_codex_rollout_completion(path: &Path, target_turn_id: &str) -> Option<Co
                             problems.insert(turn_id.clone(), limit_notification_text(&sanitize_problem_text(&problem), 50));
                         }
                     }
-                    Some("task_complete") if payload.get("turn_id").and_then(serde_json::Value::as_str) == Some(target_turn_id) => {
+                    Some("task_complete") if matches!(event, CodexRolloutEvent::Completion(id) if payload.get("turn_id").and_then(serde_json::Value::as_str) == Some(id.as_str())) => {
                         let detail = payload.get("last_agent_message").and_then(value_text)
                             .or_else(|| payload.get("error").and_then(value_text))
                             .map(|text| notification_preview(&text))
@@ -711,18 +798,28 @@ fn read_codex_rollout_completion(path: &Path, target_turn_id: &str) -> Option<Co
         }
     }
 
-    let (detail, elapsed) = completion?;
-    Some(CodexRolloutCompletion {
+    let (turn_id, problem, detail, elapsed, question_id) = match event {
+        CodexRolloutEvent::Completion(turn_id) => {
+            let (detail, elapsed) = completion?;
+            (turn_id.clone(), problems.remove(turn_id).unwrap_or_else(|| "Codex 任务完成".to_owned()), detail, elapsed, None)
+        }
+        CodexRolloutEvent::Question(id) => {
+            let (turn_id, title, detail) = question?;
+            (turn_id, format!("需要回答：{title}"), detail, None, Some(id.clone()))
+        }
+    };
+    Some(CodexRolloutNotification {
         thread_id: thread_id?,
-        turn_id: target_turn_id.to_owned(),
-        problem: problems.remove(target_turn_id).unwrap_or_else(|| "Codex 任务完成".to_owned()),
+        turn_id,
+        problem,
         detail,
         working_directory,
         elapsed,
+        question_id,
     })
 }
 
-fn deliver_codex_rollout_completion(state: &AppState, completion: CodexRolloutCompletion) {
+fn deliver_codex_rollout_notification(state: &AppState, completion: CodexRolloutNotification) {
     let chat = std::env::var_os("USERPROFILE")
         .map(PathBuf::from)
         .and_then(|home| read_codex_chat_title(&home.join(".codex").join("session_index.jsonl"), &completion.thread_id));
@@ -732,15 +829,20 @@ fn deliver_codex_rollout_completion(state: &AppState, completion: CodexRolloutCo
         if !current.smtp.verified || !current.integration.enabled_preference { return; }
         current.smtp.clone()
     };
-    let result = send_completion_email(
-        IntegrationKind::Codex,
-        &smtp,
-        &completion.problem,
-        &completion.detail,
-        completion.working_directory.as_deref(),
-        chat.as_deref(),
-        completion.elapsed,
-    );
+    let result = if completion.question_id.is_some() {
+        let body = question_email_body(&completion.detail, completion.working_directory.as_deref(), chat.as_deref());
+        send_notification_email(IntegrationKind::Codex, &smtp, &completion.problem, body)
+    } else {
+        send_completion_email(
+            IntegrationKind::Codex,
+            &smtp,
+            &completion.problem,
+            &completion.detail,
+            completion.working_directory.as_deref(),
+            chat.as_deref(),
+            completion.elapsed,
+        )
+    };
     let Ok(mut stored) = state.value.lock() else { return; };
     let entry = HistoryEntry {
         id: uuid::Uuid::new_v4().to_string(),
@@ -803,17 +905,20 @@ fn start_codex_rollout_listener(state: Arc<AppState>) -> Result<(), String> {
             collect_codex_rollouts(&root, &mut files);
             for path in files {
                 if !cursors.contains_key(&path) {
-                    if let Some(cursor) = rollout_cursor_at_end(&path) {
+                    if let Some(mut cursor) = rollout_cursor_at_end(&path) {
+                        cursor.offset = 0;
                         cursors.insert(path, cursor);
                     }
-                    continue;
                 }
                 let Some(cursor) = cursors.get_mut(&path) else { continue; };
-                for turn_id in appended_codex_task_completions(&path, cursor) {
-                    let Some(completion) = read_codex_rollout_completion(&path, &turn_id) else { continue; };
-                    let key = format!("{}:{}", completion.thread_id, completion.turn_id);
+                for event in appended_codex_events(&path, cursor) {
+                    let Some(completion) = read_codex_rollout_notification(&path, &event) else { continue; };
+                    let key = match completion.question_id.as_deref() {
+                        Some(id) => format!("input:{}:{}:{id}", completion.thread_id, completion.turn_id),
+                        None => format!("{}:{}", completion.thread_id, completion.turn_id),
+                    };
                     if delivered.insert(key.clone()) && claim_codex_completion(&state, &key) {
-                        deliver_codex_rollout_completion(&state, completion);
+                        deliver_codex_rollout_notification(&state, completion);
                     }
                 }
             }
@@ -1303,9 +1408,10 @@ mod tests {
     use super::{
         CredentialStore, LegacyCredentialMigration, migrate_legacy_credentials_with_store,
         persist_verified_smtp, remove_channel_credentials_checked_with, remove_settings_files,
-        appended_claude_task_completions, appended_codex_task_completions, collect_claude_transcripts,
+        appended_claude_task_completions, appended_codex_events, collect_claude_transcripts,
         credential_service,
-        read_claude_transcript_completion, read_codex_rollout_completion, record_codex_delivery,
+        read_claude_transcript_completion, read_codex_rollout_notification, record_codex_delivery,
+        CodexRolloutEvent, codex_question, question_email_body,
         rollout_cursor_at_end, smtp_error, RolloutCursor,
         limit_notification_text, sanitize_problem_text, select_claude_completion_ids,
     };
@@ -1651,21 +1757,21 @@ mod tests {
     }
 
     #[test]
-    fn rollout_cursor_reports_only_new_complete_task_lines() {
+    fn codex_rollout_cursor_reports_only_new_complete_task_lines() {
         let path = std::env::temp_dir().join(format!("agent-mail-notifier-rollout-{}.jsonl", uuid::Uuid::new_v4()));
         fs::write(&path, "{\"type\":\"session_meta\"}\n").expect("rollout should be written");
         let mut cursor = rollout_cursor_at_end(&path).expect("rollout cursor should initialize at the end");
         let line = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}";
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(line.as_bytes()).unwrap();
-        assert!(appended_codex_task_completions(&path, &mut cursor).is_empty());
+        assert!(appended_codex_events(&path, &mut cursor).is_empty());
         file.write_all(b"\n").unwrap();
-        assert_eq!(appended_codex_task_completions(&path, &mut cursor), vec!["turn-1"]);
+        assert_eq!(appended_codex_events(&path, &mut cursor), vec![CodexRolloutEvent::Completion("turn-1".into())]);
         fs::remove_file(path).expect("rollout should be removed");
     }
 
     #[test]
-    fn rollout_cursor_does_not_replay_after_file_truncation() {
+    fn codex_rollout_cursor_does_not_replay_after_file_truncation() {
         let path = std::env::temp_dir().join(format!("agent-mail-notifier-rollout-truncate-{}.jsonl", uuid::Uuid::new_v4()));
         let historical = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"historical-turn\"}}\n";
         fs::write(&path, format!("{historical}{historical}{historical}"))
@@ -1673,12 +1779,12 @@ mod tests {
         let mut cursor = rollout_cursor_at_end(&path).expect("rollout cursor should initialize at the end");
 
         fs::write(&path, historical).expect("rollout should be truncated and rewritten");
-        assert!(appended_codex_task_completions(&path, &mut cursor).is_empty());
+        assert!(appended_codex_events(&path, &mut cursor).is_empty());
 
         let current = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"current-turn\"}}\n";
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(current.as_bytes()).unwrap();
-        assert_eq!(appended_codex_task_completions(&path, &mut cursor), vec!["current-turn"]);
+        assert_eq!(appended_codex_events(&path, &mut cursor), vec![CodexRolloutEvent::Completion("current-turn".into())]);
         fs::remove_file(path).expect("rollout should be removed");
     }
 
@@ -1696,7 +1802,7 @@ mod tests {
     }
 
     #[test]
-    fn rollout_completion_extracts_problem_reply_and_duration() {
+    fn codex_rollout_completion_extracts_problem_reply_and_duration() {
         let path = std::env::temp_dir().join(format!("agent-mail-notifier-rollout-{}.jsonl", uuid::Uuid::new_v4()));
         let lines = [
             serde_json::json!({"type":"session_meta","payload":{"id":"thread-1","source":"vscode","cwd":"D:\\work"}}),
@@ -1706,11 +1812,84 @@ mod tests {
         ].into_iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n") + "\n";
         fs::write(&path, lines).expect("rollout should be written");
 
-        let completion = read_codex_rollout_completion(&path, "turn-1").expect("completion should be parsed");
+        let completion = read_codex_rollout_notification(&path, &CodexRolloutEvent::Completion("turn-1".into())).expect("completion should be parsed");
         assert_eq!(completion.thread_id, "thread-1");
         assert_eq!(completion.problem, "检查归档");
         assert_eq!(completion.detail, "已完成");
         assert_eq!(completion.elapsed, Some(Duration::from_millis(1234)));
+        assert!(completion.question_id.is_none());
         fs::remove_file(path).expect("rollout should be removed");
+    }
+
+    #[test]
+    fn codex_questions_notify_without_waiting_for_an_answer_and_deduplicate_log_copies() {
+        let path = std::env::temp_dir().join(format!("agent-mail-notifier-question-{}.jsonl", uuid::Uuid::new_v4()));
+        let questions = serde_json::json!([
+            {"title":"请选择保存方式", "options":["本地", "云端"]},
+            {"title":"是否保留备份"},
+        ]);
+        let call = serde_json::json!({"type":"response_item","payload":{
+            "type":"function_call","name":"request_user_input_async","call_id":"question-1",
+            "arguments":serde_json::json!({"questions":questions}).to_string(),
+            "internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"},
+        }});
+        let displayed = serde_json::json!({"type":"event_msg","payload":{
+            "type":"item_completed","turn_id":"turn-1",
+            "item":{"type":"AgentMessage","id":"question-1","questions":questions},
+        }});
+        let lines = [
+            serde_json::json!({"type":"session_meta","payload":{"id":"thread-1","cwd":"D:\\work"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}),
+            call, displayed,
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"question-1","output":"{\"accepted\":true}"}}),
+        ].into_iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n") + "\n";
+        fs::write(&path, lines).unwrap();
+        let mut cursor = RolloutCursor::default();
+        let events = appended_codex_events(&path, &mut cursor);
+        assert_eq!(events, vec![CodexRolloutEvent::Question("question-1".into()), CodexRolloutEvent::Question("question-1".into())]);
+        let mut state = StoredState::current();
+        let mut notifications = 0;
+        for event in events {
+            let notification = read_codex_rollout_notification(&path, &event).unwrap();
+            assert_eq!(notification.problem, "需要回答：请选择保存方式");
+            assert!(notification.detail.contains("- 本地\n- 云端"));
+            assert!(notification.detail.contains("是否保留备份"));
+            let key = format!("input:{}:{}:{}", notification.thread_id, notification.turn_id, notification.question_id.unwrap());
+            if record_codex_delivery(&mut state, &key) { notifications += 1; }
+        }
+        assert_eq!(notifications, 1);
+        assert!(appended_codex_events(&path, &mut cursor).is_empty());
+        assert!(record_codex_delivery(&mut state, "input:thread-1:turn-1:question-2"));
+        assert!(record_codex_delivery(&mut state, "thread-1:turn-1"));
+        let serialized = serde_json::to_string(&state).unwrap();
+        let (mut reloaded, _) = crate::state::migrate_legacy_state(&serialized).unwrap();
+        assert!(!record_codex_delivery(&mut reloaded, "input:thread-1:turn-1:question-1"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn codex_synchronous_questions_include_option_descriptions_and_ignore_unrelated_tools() {
+        let value = serde_json::json!({"type":"response_item","payload":{
+            "type":"function_call","name":"functions.request_user_input","call_id":"question-sync",
+            "arguments":serde_json::json!({"questions":[{
+                "header":"保存位置", "question":"保存在哪里？",
+                "options":[{"label":"本地", "description":"保存在当前设备"}],
+            }]}).to_string(),
+        }});
+        let (id, questions) = codex_question(&value).unwrap();
+        assert_eq!(id, "question-sync");
+        let (title, detail) = super::codex_question_text(&questions).unwrap();
+        assert_eq!(title, "保存在哪里？");
+        assert!(detail.contains("- 本地：保存在当前设备"));
+        let mut unrelated = value.clone();
+        unrelated["payload"]["name"] = "exec".into();
+        assert!(codex_question(&unrelated).is_none());
+        let mut invalid = value;
+        invalid["payload"]["arguments"] = "invalid JSON".into();
+        assert!(codex_question(&invalid).is_none());
+        let body = question_email_body(&detail, Some("D:\\work"), Some("保存设置"));
+        assert!(body.contains("状态：有新提问"));
+        assert!(body.contains("聊天：保存设置"));
+        assert!(!body.contains("工作已结束"));
     }
 }
