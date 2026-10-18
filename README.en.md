@@ -1,6 +1,6 @@
 <h1 align="center">Agent Mail Notifier</h1>
 
-<p align="center"><b>Task completion emails for Codex Desktop / Claude Code Desktop, with Codex question alerts</b> (Tauri 2 + Rust + React)</p>
+<p align="center"><b>Reply completion emails for Codex Desktop / Claude Code Desktop / CodeBuddy, with Codex question alerts</b> (Tauri 2 + Rust + React)</p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
@@ -12,17 +12,18 @@
 
 ## What this is
 
-Sends you an email when a Codex Desktop or Claude Code Desktop task finishes. When Codex asks an interactive question and waits for your answer, it also sends an alert without waiting for the entire task to finish. Leave long jobs running without watching the app constantly.
+Sends you an email when a Codex Desktop, Claude Code Desktop or CodeBuddy task finishes and returns a reply. When Codex asks an interactive question and waits for your answer, it also sends an alert without waiting for the entire task to finish. Leave long jobs running without watching the app constantly.
 
-The app only reads the two clients' session transcripts to detect task completions and Codex questions; it never writes to their configuration. SMTP authorization codes are handed to Windows Credential Manager instead of being stored in the settings file.
+The app only reads the three clients' local session records to detect reply completions and Codex questions. No Hook configuration is required, and it never writes to their configuration. SMTP authorization codes are handed to Windows Credential Manager instead of being stored in the settings file.
 
 ## Features
 
-- **Isolated channels**: separate sender mailboxes for Codex Desktop and Claude Code Desktop; separate activity history; the tray menu toggles either one on its own.
+- **Isolated channels**: separate sender mailboxes for Codex Desktop, Claude Code Desktop and CodeBuddy; separate activity history; the tray menu toggles each channel independently.
 - **Codex question alerts**: receive an email as soon as an interactive question appears, including the question, choices and their descriptions. Project and chat names are included when available, so you can return to the right conversation.
+- **CodeBuddy completion alerts**: receive an email after the entire reply finishes, including previews of the user's question and the reply, plus chat name and elapsed time when available. Completion is detected by reading local history records.
 - **Credential safety**: SMTP authorization codes go into Windows Credential Manager; the settings file keeps only host, port, encryption and other non-secret fields; the input is cleared after a successful test.
 - **Provider presets**: QQ / Foxmail, NetEase 163 / 126 / yeah.net, Outlook / Hotmail / Live and Gmail fill in host and port automatically; anything else takes a manual host, port and SSL or STARTTLS.
-- **Read-only listeners**: transcripts identify task completions and Codex questions, so Codex's `config.toml` and Claude Code's `settings.json` are never modified; no inbound port is opened.
+- **Read-only listeners**: session records identify reply completions and Codex questions, without modifying Codex, Claude Code or CodeBuddy configuration files; no inbound port is opened.
 - **Event filtering and deduplication**: subagent events and internal receipts are filtered out. Each task completion and each Codex question is deduplicated separately, with delivery records saved locally to prevent repeated log entries from producing duplicate notifications.
 - **Runs in the background**: closing the window leaves it in the system tray; the tray menu check marks show each channel's current state, and quitting stops listening entirely.
 
@@ -51,9 +52,11 @@ The first release is unsigned. Windows SmartScreen may block it; choose **More i
 
 The authorization code is not the mailbox login password. Enable SMTP in the provider's settings first. For QQ Mail: Settings → Account → POP3/SMTP. For NetEase: Settings → POP3/SMTP/IMAP.
 
-**2. Enable notifications.** Turn on Codex and Claude Code independently.
+**2. Enable notifications.** Select the Codex, Claude Code or CodeBuddy channel, complete its SMTP test, then turn on its notification switch.
 
 With the Codex channel enabled, both interactive questions and task completions produce notifications. The same question is only announced once; after you answer and the task finishes, a separate completion email can still be sent. Early questions and completion events in sessions created while the notifier is running are also read.
+
+The CodeBuddy channel sends reply completion emails only. Questions and permission prompts do not produce separate alerts. Keep the notifier running in the background; replies that finished before it started are not replayed.
 
 ### SMTP presets
 
@@ -70,7 +73,8 @@ Use Custom for any other provider and fill in host, port and encryption.
 
 - **Windows x64 only**, since it relies on Windows Credential Manager and local transcript paths.
 - **Question alerts currently support Codex interactive questions only.** Questions written as ordinary reply text do not trigger a question email.
-- **Replies cut off by the token limit are not mailed**, because a turn counts as finished on `end_turn` or `stop_sequence`, and a `max_tokens` truncation is skipped.
+- **CodeBuddy supports reply completion alerts only**, without separate alerts for interactive questions or permission prompts.
+- **Claude Code replies cut off by the token limit are not mailed**, because a turn counts as finished on `end_turn` or `stop_sequence`, and a `max_tokens` truncation is skipped.
 - **Events while the app is stopped are lost**, with no offline listening queue, so a restart does not dump a backlog of stale mail.
 - **After moving the install path**, the portable build needs each channel re-enabled once.
 
@@ -148,7 +152,7 @@ The frontend owns the UI, `src-tauri/src/` watches transcripts and sends mail, a
 ## Safety
 
 - SMTP authorization codes are stored only in Windows Credential Manager. They are not written to the settings file, history, or the UI. The input is cleared after a successful test.
-- The app does not modify Codex or Claude Code config files. It only reads session transcripts.
+- The app does not modify Codex, Claude Code or CodeBuddy config files. It only reads local session records.
 - No inbound ports and no third-party upload, mail goes straight from this machine to the configured SMTP server.
 
 ## Feedback
