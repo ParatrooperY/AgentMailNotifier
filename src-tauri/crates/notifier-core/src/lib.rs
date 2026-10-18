@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum IntegrationKind {
     Codex,
     Claude,
+    CodeBuddy,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

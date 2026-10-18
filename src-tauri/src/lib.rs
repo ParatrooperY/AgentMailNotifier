@@ -111,6 +111,7 @@ struct ClaudeTranscriptCompletion {
 struct TrayControls {
     codex: CheckMenuItem<tauri::Wry>,
     claude: CheckMenuItem<tauri::Wry>,
+    codebuddy: CheckMenuItem<tauri::Wry>,
 }
 
 fn sync_tray_controls(controls: &TrayControls, stored: &StoredState) {
@@ -118,6 +119,8 @@ fn sync_tray_controls(controls: &TrayControls, stored: &StoredState) {
     let _ = controls.claude.set_checked(stored.claude.integration.enabled_preference);
     let _ = controls.codex.set_enabled(stored.codex.smtp.verified);
     let _ = controls.claude.set_enabled(stored.claude.smtp.verified);
+    let _ = controls.codebuddy.set_checked(stored.codebuddy.integration.enabled_preference);
+    let _ = controls.codebuddy.set_enabled(stored.codebuddy.smtp.verified);
 }
 
 impl AppState {
@@ -187,7 +190,7 @@ fn view(kind: IntegrationKind, state: &StoredState) -> IntegrationView {
 }
 
 fn dashboard(state: &StoredState) -> Dashboard {
-    Dashboard { integrations: vec![view(IntegrationKind::Codex, state), view(IntegrationKind::Claude, state)] }
+    Dashboard { integrations: vec![view(IntegrationKind::Codex, state), view(IntegrationKind::Claude, state), view(IntegrationKind::CodeBuddy, state)] }
 }
 
 #[tauri::command]
@@ -571,6 +574,160 @@ fn run_hook_mode() -> bool {
     }
 }
 
+struct CodeBuddyCompletion {
+    key: String,
+    problem: String,
+    detail: String,
+    chat: Option<String>,
+    elapsed: Option<Duration>,
+}
+
+fn collect_codebuddy_conversations(root: &Path, files: &mut Vec<PathBuf>) {
+    let directories = |path: &Path| -> Vec<PathBuf> {
+        fs::read_dir(path).map(|entries| entries.flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .map(|entry| entry.path()).collect()).unwrap_or_default()
+    };
+    for user in directories(root) {
+        for client in directories(&user) {
+            if !client.file_name().is_some_and(|name| name.to_string_lossy().to_ascii_lowercase().starts_with("codebuddy")) { continue; }
+            let histories = std::iter::once(client.join("history"))
+                .chain(directories(&client).into_iter().map(|account| account.join("history")));
+            for history in histories {
+                for workspace in directories(&history) {
+                    for conversation in directories(&workspace) {
+                        let index = conversation.join("index.json");
+                        if index.is_file() { files.push(index); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn read_codebuddy_message(index: &Path, id: &str) -> Option<(serde_json::Value, serde_json::Value)> {
+    if id.is_empty() || id.contains(['/', '\\', ':']) || matches!(id, "." | "..") { return None; }
+    let path = index.parent()?.join("messages").join(format!("{id}.json"));
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let message = match record.get("message")? {
+        serde_json::Value::String(text) => serde_json::from_str(text).ok()?,
+        value if value.is_object() => value.clone(),
+        _ => return None,
+    };
+    let extra = match record.get("extra") {
+        Some(serde_json::Value::String(text)) => serde_json::from_str(text).unwrap_or(serde_json::Value::Null),
+        Some(value) => value.clone(),
+        None => serde_json::Value::Null,
+    };
+    Some((message, extra))
+}
+
+fn codebuddy_message_text(message: &serde_json::Value) -> Option<String> {
+    match message.get("content")? {
+        serde_json::Value::String(text) => value_text(&serde_json::Value::String(text.clone())),
+        serde_json::Value::Array(blocks) => {
+            let text = blocks.iter().filter(|block| block["type"] == "text")
+                .filter_map(|block| block.get("text").and_then(value_text)).collect::<Vec<_>>().join("\n");
+            (!text.trim().is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn appended_codebuddy_completions(index_path: &Path, index: &serde_json::Value, seen: &mut HashSet<String>, notify: bool) -> Vec<CodeBuddyCompletion> {
+    let Some(conversation) = index_path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) else { return Vec::new(); };
+    let Some(requests) = index.get("requests").and_then(serde_json::Value::as_array) else { return Vec::new(); };
+    let metadata = index.get("messages").and_then(serde_json::Value::as_array);
+    let mut completions = Vec::new();
+    for request in requests {
+        if request["state"] != "complete" { continue; }
+        let Some(id) = request.get("id").and_then(serde_json::Value::as_str) else { continue; };
+        let key = format!("history:{conversation}:{id}");
+        if seen.contains(&key) { continue; }
+        if !notify { seen.insert(key); continue; }
+        let Some(message_ids) = request.get("messages").and_then(serde_json::Value::as_array) else { continue; };
+        let Some(metadata) = metadata else { continue; };
+        let messages = message_ids.iter().filter_map(serde_json::Value::as_str)
+            .filter_map(|id| metadata.iter().find(|message| message["id"].as_str() == Some(id))).collect::<Vec<_>>();
+        let Some(assistant) = messages.iter().rev().find(|message| message["role"] == "assistant") else { continue; };
+        // CodeBuddy can leave message isComplete=false after the request completes.
+        let Some(assistant_id) = assistant["id"].as_str() else { continue; };
+        let Some((answer, extra)) = read_codebuddy_message(index_path, assistant_id) else { continue; };
+        if extra["isHelperMessage"] == true { continue; }
+        let Some(text) = codebuddy_message_text(&answer) else { continue; };
+        let Some(user) = messages.iter().find(|message| message["role"] == "user") else { continue; };
+        let Some((prompt, user_extra)) = user["id"].as_str().and_then(|id| read_codebuddy_message(index_path, id)) else { continue; };
+        if user_extra["isHelperMessage"] == true { continue; }
+        let problem = user_extra.get("inputPhrase").and_then(serde_json::Value::as_array)
+            .map(|phrases| phrases.iter().filter(|phrase| matches!(phrase["type"].as_str(), Some("normal" | "text")))
+                .filter_map(|phrase| phrase.get("content").and_then(value_text)).collect::<Vec<_>>().join("\n"))
+            .filter(|text| !text.trim().is_empty()).or_else(|| codebuddy_message_text(&prompt)).unwrap_or_else(|| "CodeBuddy 任务完成".to_owned());
+        let workspace_index = index_path.parent().and_then(Path::parent).map(|parent| parent.join("index.json"));
+        let chat = workspace_index.and_then(|path| fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|workspace| workspace.get("conversations")?.as_array()?.iter()
+                .find(|chat| chat["id"].as_str() == Some(conversation))?.get("name").and_then(value_text));
+        completions.push(CodeBuddyCompletion {
+            key: key.clone(), problem: limit_notification_text(&sanitize_problem_text(&problem), 50),
+            detail: notification_preview(&text), chat,
+            elapsed: extra["statsSnapshot"]["elapsedMs"].as_u64().map(Duration::from_millis),
+        });
+        seen.insert(key);
+    }
+    completions
+}
+
+fn deliver_codebuddy_completion(state: &AppState, completion: CodeBuddyCompletion) -> bool {
+    let smtp = {
+        let Ok(mut stored) = state.value.lock() else { return false; };
+        let current = &mut stored.codebuddy;
+        if !current.smtp.verified || !current.integration.enabled_preference { return false; }
+        if current.integration.codex_delivered_events.contains(&completion.key) { return false; }
+        let previous = current.integration.codex_delivered_events.clone();
+        current.integration.codex_delivered_events.push_back(completion.key);
+        while current.integration.codex_delivered_events.len() > MAX_CODEX_DELIVERED_EVENTS { current.integration.codex_delivered_events.pop_front(); }
+        let smtp = current.smtp.clone();
+        if state.save(&stored).is_err() { stored.codebuddy.integration.codex_delivered_events = previous; return false; }
+        smtp
+    };
+    let result = send_completion_email(IntegrationKind::CodeBuddy, &smtp, &completion.problem, &completion.detail, None, completion.chat.as_deref(), completion.elapsed);
+    let Ok(mut stored) = state.value.lock() else { return false; };
+    stored.codebuddy.history.push_front(HistoryEntry {
+        id: uuid::Uuid::new_v4().to_string(), source: "CodeBuddy".to_owned(), title: completion.problem,
+        result: if result.is_ok() { "sent" } else { "failed" }.to_owned(),
+        detail: result.err().unwrap_or(completion.detail), occurred_at: Local::now().format("%Y-%m-%d %H:%M").to_string(),
+    });
+    stored.codebuddy.history.truncate(100);
+    let _ = state.save(&stored);
+    true
+}
+
+fn start_codebuddy_history_listener(state: Arc<AppState>, app: AppHandle) -> Result<(), String> {
+    let root = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).ok_or("找不到本地应用数据目录")?
+        .join("CodeBuddyExtension").join("Data");
+    let mut files = Vec::new();
+    collect_codebuddy_conversations(&root, &mut files);
+    let mut seen = HashSet::new();
+    for path in files {
+        if let Some(index) = fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()) {
+            appended_codebuddy_completions(&path, &index, &mut seen, false);
+        }
+    }
+    thread::spawn(move || loop {
+        let mut files = Vec::new();
+        collect_codebuddy_conversations(&root, &mut files);
+        let notify = state.value.lock().map(|stored| stored.codebuddy.smtp.verified && stored.codebuddy.integration.enabled_preference).unwrap_or(false);
+        for path in files {
+            let Some(index) = fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()) else { continue; };
+            for completion in appended_codebuddy_completions(&path, &index, &mut seen, notify) {
+                if deliver_codebuddy_completion(&state, completion) { let _ = app.emit("dashboard-changed", ()); }
+            }
+        }
+        thread::sleep(Duration::from_secs(1));
+    });
+    Ok(())
+}
+
 fn app_data_root() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -770,6 +927,24 @@ fn read_codex_rollout_notification(path: &Path, event: &CodexRolloutEvent) -> Op
                     .map(str::to_owned);
                 working_directory = payload.get("cwd").and_then(serde_json::Value::as_str).map(str::to_owned);
             }
+            Some("response_item") => {
+                let Some(payload) = value.get("payload") else { continue; };
+                if payload["type"] != "message" || payload["role"] != "user" { continue; }
+                let Some(turn_id) = payload.get("internal_chat_message_metadata_passthrough")
+                    .and_then(|metadata| metadata.get("turn_id")).and_then(serde_json::Value::as_str)
+                    .or(active_turn.as_deref()) else { continue; };
+                let Some(content) = payload.get("content").and_then(serde_json::Value::as_array) else { continue; };
+                let problem = content.iter().filter(|block| matches!(block["type"].as_str(), Some("input_text" | "text")))
+                    .filter_map(value_text).map(|text| sanitize_problem_text(&text))
+                    .filter(|text| ![
+                        "<external_codex_apps_open_page>", "<environment_context>",
+                        "<send_user_message_question_reply>", "# AGENTS.md instructions",
+                    ].iter().any(|prefix| text.starts_with(prefix)))
+                    .collect::<Vec<_>>().join("\n");
+                if !problem.trim().is_empty() {
+                    problems.entry(turn_id.to_owned()).or_insert_with(|| limit_notification_text(&problem, 50));
+                }
+            }
             Some("event_msg") => {
                 let Some(payload) = value.get("payload") else { continue; };
                 match payload.get("type").and_then(serde_json::Value::as_str) {
@@ -780,7 +955,7 @@ fn read_codex_rollout_notification(path: &Path, event: &CodexRolloutEvent) -> Op
                         if let Some(turn_id) = active_turn.as_ref()
                             && let Some(problem) = payload.get("message").and_then(value_text)
                         {
-                            problems.insert(turn_id.clone(), limit_notification_text(&sanitize_problem_text(&problem), 50));
+                            problems.entry(turn_id.clone()).or_insert_with(|| limit_notification_text(&sanitize_problem_text(&problem), 50));
                         }
                     }
                     Some("task_complete") if matches!(event, CodexRolloutEvent::Completion(id) if payload.get("turn_id").and_then(serde_json::Value::as_str) == Some(id.as_str())) => {
@@ -1240,6 +1415,7 @@ fn remove_channel_credentials_checked_with(
     for (service, email) in [
         (credential_service(IntegrationKind::Codex), state.codex.smtp.email.as_str()),
         (credential_service(IntegrationKind::Claude), state.claude.smtp.email.as_str()),
+        (credential_service(IntegrationKind::CodeBuddy), state.codebuddy.smtp.email.as_str()),
         (KEYRING_SERVICE.to_owned(), state.codex.smtp.email.as_str()),
         (KEYRING_SERVICE.to_owned(), state.claude.smtp.email.as_str()),
     ] {
@@ -1289,12 +1465,20 @@ fn codex_timing_command(executable: &str) -> String {
 #[tauri::command]
 fn set_integration_enabled(kind: IntegrationKind, enabled: bool, state: State<'_, Arc<AppState>>) -> Result<Dashboard, String> {
     let mut stored = state.value.lock().map_err(|_| "设置锁不可用")?;
-    let current = channel_mut(&mut stored, kind);
-    if !current.smtp.verified { return Err("请先完成该通道的 SMTP 测试".into()); }
-    current.integration.enabled_preference = enabled;
-    state.save(&stored)?;
+    update_integration_enabled(&state, &mut stored, kind, enabled)?;
     state.sync_tray(&stored);
     Ok(dashboard(&stored))
+}
+
+fn update_integration_enabled(state: &AppState, stored: &mut StoredState, kind: IntegrationKind, enabled: bool) -> Result<(), String> {
+    if !channel(stored, kind).smtp.verified { return Err("请先完成该通道的 SMTP 测试".into()); }
+    let previous = channel(stored, kind).integration.enabled_preference;
+    channel_mut(stored, kind).integration.enabled_preference = enabled;
+    if let Err(error) = state.save(stored) {
+        channel_mut(stored, kind).integration.enabled_preference = previous;
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1320,14 +1504,15 @@ fn setup_tray(app: &tauri::App, state: Arc<AppState>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "打开主页", true, None::<&str>)?;
     let codex = CheckMenuItem::with_id(app, "codex-toggle", "Codex 邮件通知", true, false, None::<&str>)?;
     let claude = CheckMenuItem::with_id(app, "claude-toggle", "Claude Code 邮件通知", true, false, None::<&str>)?;
+    let codebuddy = CheckMenuItem::with_id(app, "codebuddy-toggle", "CodeBuddy 邮件通知", true, false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
     if let Ok(mut tray) = state.tray.lock() {
-        *tray = Some(TrayControls { codex: codex.clone(), claude: claude.clone() });
+        *tray = Some(TrayControls { codex: codex.clone(), claude: claude.clone(), codebuddy: codebuddy.clone() });
     }
     if let Ok(stored) = state.value.lock() {
         state.sync_tray(&stored);
     }
-    let menu = Menu::with_items(app, &[&open, &codex, &claude, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &codex, &claude, &codebuddy, &quit])?;
     let menu_state = state.clone();
     TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
@@ -1341,15 +1526,17 @@ fn setup_tray(app: &tauri::App, state: Arc<AppState>) -> tauri::Result<()> {
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "open" => show_main_window(app),
             "quit" => app.exit(0),
-            "codex-toggle" | "claude-toggle" => {
+            "codex-toggle" | "claude-toggle" | "codebuddy-toggle" => {
                 if let Ok(mut stored) = menu_state.value.lock() {
-                    let kind = if event.id.as_ref() == "codex-toggle" { IntegrationKind::Codex } else { IntegrationKind::Claude };
-                    let current = channel_mut(&mut stored, kind);
+                    let kind = match event.id.as_ref() { "codex-toggle" => IntegrationKind::Codex, "claude-toggle" => IntegrationKind::Claude, _ => IntegrationKind::CodeBuddy };
+                    let current = channel(&stored, kind);
                     if current.smtp.verified {
-                        current.integration.enabled_preference = !current.integration.enabled_preference;
-                        if menu_state.save(&stored).is_ok() {
+                        let enabled = !current.integration.enabled_preference;
+                        if update_integration_enabled(&menu_state, &mut stored, kind, enabled).is_ok() {
                             menu_state.sync_tray(&stored);
                             let _ = app.emit("dashboard-changed", ());
+                        } else {
+                            show_main_window(app);
                         }
                     }
                 }
@@ -1377,6 +1564,8 @@ pub fn run() {
             start_codex_rollout_listener(setup_state.clone())
                 .map_err(std::io::Error::other)?;
             start_claude_transcript_listener(setup_state.clone())
+                .map_err(std::io::Error::other)?;
+            start_codebuddy_history_listener(setup_state.clone(), app.handle().clone())
                 .map_err(std::io::Error::other)?;
             setup_tray(app, setup_state.clone())?;
             if let Some(window) = app.get_webview_window("main") {
@@ -1419,7 +1608,7 @@ mod tests {
     use agent_mail_notifier_core::IntegrationKind;
 
     struct FakeCredentialStore {
-        passwords: RefCell<[Option<String>; 2]>,
+        passwords: RefCell<[Option<String>; 3]>,
         fail_write: Cell<Option<IntegrationKind>>,
     }
 
@@ -1446,6 +1635,7 @@ mod tests {
         match kind {
             IntegrationKind::Codex => 0,
             IntegrationKind::Claude => 1,
+            IntegrationKind::CodeBuddy => 2,
         }
     }
 
@@ -1455,7 +1645,7 @@ mod tests {
         state.codex.smtp.email = "account".to_owned();
         state.codex.smtp.provider_label = "旧配置".to_owned();
         let credential_store = FakeCredentialStore {
-            passwords: RefCell::new([Some("previous".to_owned()), None]),
+            passwords: RefCell::new([Some("previous".to_owned()), None, None]),
             fail_write: Cell::new(None),
         };
         let next_smtp = StoredSmtp { email: "account".to_owned(), provider_label: "新配置".to_owned(), verified: true, ..StoredSmtp::default() };
@@ -1480,7 +1670,7 @@ mod tests {
         state.codex.smtp.email = "account".to_owned();
         state.claude.smtp.email = "account".to_owned();
         let credential_store = FakeCredentialStore {
-            passwords: RefCell::new([None, None]),
+            passwords: RefCell::new([None, None, None]),
             fail_write: Cell::new(Some(IntegrationKind::Claude)),
         };
 
@@ -1822,6 +2012,40 @@ mod tests {
     }
 
     #[test]
+    fn codex_completion_titles_use_attributed_user_messages_and_ignore_context_and_question_answers() {
+        let path = std::env::temp_dir().join(format!("amn-codex-titles-{}.jsonl", uuid::Uuid::new_v4()));
+        let user = |turn: &str, text: &str| serde_json::json!({"type":"response_item","payload":{
+            "type":"message","role":"user","content":[{"type":"input_text","text":text}],
+            "internal_chat_message_metadata_passthrough":{"turn_id":turn}
+        }});
+        let lines = [
+            serde_json::json!({"type":"session_meta","payload":{"id":"thread-1","source":"vscode"}}),
+            user("turn-1", "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>"),
+            user("turn-1", "<environment_context>context only</environment_context>"),
+            user("turn-1", "# AGENTS.md instructions\nProject preferences"),
+            user("turn-1", "项目当前版本"),
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}),
+            user("turn-1", "<send_user_message_question_reply>test answer</send_user_message_question_reply>"),
+            serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","output":"tool result"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"版本已确认"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2"}}),
+            user("turn-1", "迟到的上一轮消息"),
+            user("turn-2", "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>"),
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"构建安装包"}]}}),
+            user("turn-2", "补充说明不替换原始问题"),
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-2","last_agent_message":"构建完成"}}),
+        ].into_iter().map(|line| line.to_string()).collect::<Vec<_>>().join("\n") + "\n";
+        fs::write(&path, lines).unwrap();
+        let first = read_codex_rollout_notification(&path, &CodexRolloutEvent::Completion("turn-1".into())).unwrap();
+        let second = read_codex_rollout_notification(&path, &CodexRolloutEvent::Completion("turn-2".into())).unwrap();
+        assert_eq!(first.problem, "项目当前版本");
+        assert_eq!(first.detail, "版本已确认");
+        assert_eq!(second.problem, "构建安装包");
+        assert_eq!(second.detail, "构建完成");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn codex_questions_notify_without_waiting_for_an_answer_and_deduplicate_log_copies() {
         let path = std::env::temp_dir().join(format!("agent-mail-notifier-question-{}.jsonl", uuid::Uuid::new_v4()));
         let questions = serde_json::json!([
@@ -1892,4 +2116,77 @@ mod tests {
         assert!(body.contains("聊天：保存设置"));
         assert!(!body.contains("工作已结束"));
     }
+
+    fn codebuddy_history_fixture() -> (std::path::PathBuf, std::path::PathBuf, serde_json::Value) {
+        let root = std::env::temp_dir().join(format!("amn-codebuddy-history-{}", uuid::Uuid::new_v4()));
+        let conversation = root.join("account/CodeBuddyIDE/account/history/workspace/chat-1");
+        fs::create_dir_all(conversation.join("messages")).unwrap();
+        fs::write(conversation.parent().unwrap().join("index.json"), serde_json::json!({"conversations":[{"id":"chat-1","name":"测试会话"}]}).to_string()).unwrap();
+        fs::write(conversation.join("messages/user-1.json"), serde_json::json!({
+            "message":serde_json::json!({"role":"user","content":[{"type":"text","text":"<additional_data>Below are some potentially helpful details.</additional_data>\n只返回最终结果"}]}).to_string(),
+            "extra":serde_json::json!({"isHelperMessage":false,"inputPhrase":[{"type":"normal","content":"只返回最终结果"}]}).to_string()
+        }).to_string()).unwrap();
+        fs::write(conversation.join("messages/assistant-1.json"), serde_json::json!({
+            "message":serde_json::json!({"role":"assistant","content":[{"type":"reasoning","text":"内部推理"},{"type":"text","text":"最终回复"}]}).to_string(),
+            "extra":serde_json::json!({"isHelperMessage":false,"statsSnapshot":{"elapsedMs":1234}}).to_string()
+        }).to_string()).unwrap();
+        let index = serde_json::json!({
+            "messages":[{"id":"user-1","role":"user","isComplete":true},{"id":"assistant-1","role":"assistant","isComplete":false}],
+            "requests":[{"id":"turn-old","state":"complete","messages":["user-1","assistant-1"]}]
+        });
+        let path = conversation.join("index.json");
+        fs::write(&path, index.to_string()).unwrap();
+        (root, path, index)
+    }
+
+    #[test]
+    fn codebuddy_history_notifies_only_new_finished_requests_and_deduplicates() {
+        let (root, path, mut index) = codebuddy_history_fixture();
+        let mut seen = std::collections::HashSet::new();
+        assert!(super::appended_codebuddy_completions(&path, &index, &mut seen, false).is_empty());
+        assert!(super::appended_codebuddy_completions(&path, &index, &mut seen, true).is_empty());
+        index["requests"][0]["id"] = "turn-new".into();
+        index["requests"][0]["state"] = "running".into();
+        assert!(super::appended_codebuddy_completions(&path, &index, &mut seen, true).is_empty());
+        index["requests"][0]["state"] = "complete".into();
+        let completions = super::appended_codebuddy_completions(&path, &index, &mut seen, true);
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].problem, "只返回最终结果");
+        assert_eq!(completions[0].detail, "最终回复");
+        assert_eq!(completions[0].chat.as_deref(), Some("测试会话"));
+        assert_eq!(completions[0].elapsed, Some(Duration::from_millis(1234)));
+        assert!(super::appended_codebuddy_completions(&path, &index, &mut seen, true).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn codebuddy_history_retries_partial_message_files_and_ignores_helper_responses() {
+        let (root, path, index) = codebuddy_history_fixture();
+        let answer = path.parent().unwrap().join("messages/assistant-1.json");
+        let bytes = fs::read(&answer).unwrap();
+        fs::write(&answer, "{\"message\":").unwrap();
+        let mut seen = std::collections::HashSet::new();
+        assert!(super::appended_codebuddy_completions(&path, &index, &mut seen, true).is_empty());
+        assert!(seen.is_empty());
+        let mut helper: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        helper["extra"] = serde_json::json!({"isHelperMessage":true}).to_string().into();
+        fs::write(&answer, helper.to_string()).unwrap();
+        assert!(super::appended_codebuddy_completions(&path, &index, &mut seen, true).is_empty());
+        fs::write(&answer, bytes).unwrap();
+        assert_eq!(super::appended_codebuddy_completions(&path, &index, &mut seen, true).len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn codebuddy_history_collection_stays_inside_codebuddy_history_directories() {
+        let (root, path, _) = codebuddy_history_fixture();
+        let unrelated = root.join("account/VSCode/account/history/workspace/unrelated/index.json");
+        fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
+        fs::write(unrelated, "{}").unwrap();
+        let mut files = Vec::new();
+        super::collect_codebuddy_conversations(&root, &mut files);
+        assert_eq!(files, vec![path]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }

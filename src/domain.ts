@@ -1,5 +1,5 @@
 export type ProviderKind = "qq" | "163" | "outlook" | "gmail" | "custom";
-export type IntegrationKind = "codex" | "claude";
+export type IntegrationKind = "codex" | "claude" | "codebuddy";
 
 export interface SmtpStatus {
   email: string;
@@ -25,7 +25,7 @@ export interface IntegrationStatus {
 
 export interface HistoryEntry {
   id: string;
-  source: "Codex" | "Claude Code";
+  source: "Codex" | "Claude Code" | "CodeBuddy";
   title: string;
   result: "sent" | "failed";
   detail: string;

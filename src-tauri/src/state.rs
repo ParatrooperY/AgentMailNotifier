@@ -55,6 +55,7 @@ pub struct StoredState {
     pub version: u32,
     pub codex: StoredChannel,
     pub claude: StoredChannel,
+    pub codebuddy: StoredChannel,
     pub legacy_history: VecDeque<HistoryEntry>,
 }
 
@@ -75,15 +76,21 @@ struct PersistedState {
     #[serde(skip_serializing_if = "Option::is_none")]
     claude_smtp: Option<StoredSmtp>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    codebuddy_smtp: Option<StoredSmtp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     codex: Option<StoredIntegration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     claude: Option<StoredIntegration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codebuddy: Option<StoredIntegration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     history: Option<VecDeque<HistoryEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     codex_history: Option<VecDeque<HistoryEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     claude_history: Option<VecDeque<HistoryEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codebuddy_history: Option<VecDeque<HistoryEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     legacy_history: Option<VecDeque<HistoryEntry>>,
 }
@@ -95,11 +102,14 @@ impl Serialize for StoredState {
             smtp: None,
             codex_smtp: Some(self.codex.smtp.clone()),
             claude_smtp: Some(self.claude.smtp.clone()),
+            codebuddy_smtp: Some(self.codebuddy.smtp.clone()),
             codex: Some(self.codex.integration.clone()),
             claude: Some(self.claude.integration.clone()),
+            codebuddy: Some(self.codebuddy.integration.clone()),
             history: None,
             codex_history: Some(self.codex.history.clone()),
             claude_history: Some(self.claude.history.clone()),
+            codebuddy_history: Some(self.codebuddy.history.clone()),
             legacy_history: (!self.legacy_history.is_empty()).then(|| self.legacy_history.clone()),
         }
         .serialize(serializer)
@@ -152,10 +162,19 @@ pub fn migrate_legacy_state(text: &str) -> Result<(StoredState, bool), String> {
             integration: raw.claude.unwrap_or_default(),
             history: claude_history,
         },
+        codebuddy: StoredChannel {
+            smtp: raw.codebuddy_smtp.unwrap_or_default(),
+            integration: raw.codebuddy.unwrap_or_default(),
+            history: raw.codebuddy_history.unwrap_or_default(),
+        },
         legacy_history: unassigned_history,
     };
     bound_history(&mut state.codex.history);
     bound_history(&mut state.claude.history);
+    bound_history(&mut state.codebuddy.history);
+    while state.codebuddy.integration.codex_delivered_events.len() > MAX_CODEX_DELIVERED_EVENTS {
+        state.codebuddy.integration.codex_delivered_events.pop_front();
+    }
     while state.codex.integration.codex_delivered_events.len() > MAX_CODEX_DELIVERED_EVENTS {
         state.codex.integration.codex_delivered_events.pop_front();
     }
@@ -172,6 +191,7 @@ pub fn channel(state: &StoredState, kind: IntegrationKind) -> &StoredChannel {
     match kind {
         IntegrationKind::Codex => &state.codex,
         IntegrationKind::Claude => &state.claude,
+        IntegrationKind::CodeBuddy => &state.codebuddy,
     }
 }
 
@@ -179,6 +199,7 @@ pub fn channel_mut(state: &mut StoredState, kind: IntegrationKind) -> &mut Store
     match kind {
         IntegrationKind::Codex => &mut state.codex,
         IntegrationKind::Claude => &mut state.claude,
+        IntegrationKind::CodeBuddy => &mut state.codebuddy,
     }
 }
 
@@ -186,6 +207,7 @@ pub fn channel_name(kind: IntegrationKind) -> &'static str {
     match kind {
         IntegrationKind::Codex => "codex",
         IntegrationKind::Claude => "claude",
+        IntegrationKind::CodeBuddy => "codebuddy",
     }
 }
 
@@ -197,11 +219,12 @@ pub fn source_name(kind: IntegrationKind) -> &'static str {
     match kind {
         IntegrationKind::Codex => "Codex",
         IntegrationKind::Claude => "Claude Code",
+        IntegrationKind::CodeBuddy => "CodeBuddy",
     }
 }
 
 pub fn mark_disconnected_for_uninstall(state: &mut StoredState) {
-    for channel in [&mut state.codex, &mut state.claude] {
+    for channel in [&mut state.codex, &mut state.claude, &mut state.codebuddy] {
         channel.integration.enabled_preference = false;
     }
 }
@@ -332,6 +355,30 @@ mod tests {
         assert!(!state.codex.integration.enabled_preference);
         assert_eq!(state.codex.smtp.email, "codex-user");
         assert_eq!(state.codex.history.len(), 1);
+    }
+
+    #[test]
+    fn codebuddy_state_round_trip_keeps_channels_independent_and_accepts_old_settings() {
+        let mut state = StoredState::current();
+        state.codex.smtp.provider_label = "existing-channel".to_owned();
+        state.codebuddy.smtp.verified = true;
+        state.codebuddy.integration.enabled_preference = true;
+        state.codebuddy.integration.codex_delivered_events.push_back("question-1".to_owned());
+        let mut encoded = serde_json::to_value(&state).unwrap();
+        let (mut restored, _) = migrate_legacy_state(&encoded.to_string()).unwrap();
+        assert_eq!(restored.codex.smtp.provider_label, "existing-channel");
+        assert!(restored.codebuddy.smtp.verified);
+        assert_eq!(restored.codebuddy.integration.codex_delivered_events.front().map(String::as_str), Some("question-1"));
+        mark_disconnected_for_uninstall(&mut restored);
+        assert!(!restored.codebuddy.integration.enabled_preference);
+        assert!(restored.codebuddy.smtp.verified);
+        for field in ["codebuddy", "codebuddy_smtp", "codebuddy_history"] {
+            encoded.as_object_mut().unwrap().remove(field);
+        }
+        let (legacy, _) = migrate_legacy_state(&encoded.to_string()).unwrap();
+        assert_eq!(legacy.codex.smtp.provider_label, "existing-channel");
+        assert!(!legacy.codebuddy.smtp.verified);
+        assert!(!legacy.codebuddy.integration.enabled_preference);
     }
 
     #[test]
